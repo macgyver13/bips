@@ -1,23 +1,13 @@
 #!/usr/bin/env python3
 """
-PSBT v2 utilities for BIP 375
+PSBT v2 serialization utilities for BIP 375
 
-Helper functions for creating, serializing, and parsing PSBT v2 transactions
-with BIP 375 silent payment extensions.
+Consolidated PSBT serialization functions from psbt_utils.py and silent_payment_psbt.py
 """
 
 import struct
-from typing import List, Tuple
-# import sys
-# import os
+from typing import List
 
-
-# Add BIP-352 directory to path for secp256k1 imports
-# bip352_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'bip-0352')
-# if bip352_path not in sys.path:
-#     sys.path.append(bip352_path)
-# from secp256k1 import ECPubKey, TaggedHash
-from dleq_374 import TaggedHash
 
 def compact_size_uint(n: int) -> bytes:
     """Encode integer as Bitcoin compact size uint"""
@@ -30,7 +20,8 @@ def compact_size_uint(n: int) -> bytes:
     else:
         return b'\xff' + struct.pack('<Q', n)
 
-def read_compact_size_uint(data: bytes, offset: int = 0) -> Tuple[int, int]:
+
+def read_compact_size_uint(data: bytes, offset: int = 0) -> tuple[int, int]:
     """Read compact size uint from bytes, return (value, new_offset)"""
     if offset >= len(data):
         raise ValueError("Not enough data")
@@ -51,34 +42,37 @@ def read_compact_size_uint(data: bytes, offset: int = 0) -> Tuple[int, int]:
             raise ValueError("Not enough data")
         return struct.unpack('<Q', data[offset+1:offset+9])[0], offset + 9
 
+
 def write_keydata(key_data: bytes) -> bytes:
     """Write key data with length prefix"""
     return compact_size_uint(len(key_data)) + key_data
 
+
 def write_valuedata(value_data: bytes) -> bytes:
     """Write value data with length prefix"""
     return compact_size_uint(len(value_data)) + value_data
+
 
 def write_psbt_field(field_type: int, key_data: bytes, value_data: bytes) -> bytes:
     """Write a PSBT field in the format: key_len + field_type + key_data + value_len + value_data"""
     key_full = bytes([field_type]) + key_data
     return write_keydata(key_full) + write_valuedata(value_data)
 
+
 def ser_uint32(n: int) -> bytes:
     """Serialize 32-bit unsigned integer in little-endian"""
     return struct.pack('<I', n)
 
-# def get_input_hash(outpoints: List[bytes], sum_input_pubkeys: ECPubKey) -> bytes:
-#     """Compute input hash as defined in BIP 352"""
-#     # Sort outpoints
-#     sorted_outpoints = sorted(outpoints)
-#     lowest_outpoint = sorted_outpoints[0]
-    
-#     return TaggedHash("BIP0352/Inputs", lowest_outpoint + sum_input_pubkeys.get_bytes(bip340=False))
 
-def create_silent_payment_tweak(input_hash: bytes, ecdh_shared_secret: bytes, k: int) -> bytes:
-    """Create silent payment tweak using BIP 352 protocol"""
-    return TaggedHash("BIP0352/SharedSecret", ecdh_shared_secret + ser_uint32(k))
+def create_outpoint(txid: bytes, vout: int) -> bytes:
+    """Create a Bitcoin outpoint (32 byte txid + 4 byte vout)"""
+    return txid + struct.pack('<I', vout)
+
+
+def create_witness_utxo(amount: int, script_pubkey: bytes) -> bytes:
+    """Create witness UTXO field value"""
+    return struct.pack('<Q', amount) + compact_size_uint(len(script_pubkey)) + script_pubkey
+
 
 class PSBTField:
     """Represents a single PSBT field"""
@@ -91,6 +85,7 @@ class PSBTField:
     def serialize(self) -> bytes:
         """Serialize this field to PSBT format"""
         return write_psbt_field(self.field_type, self.key_data, self.value_data)
+
 
 class PSBTv2:
     """
@@ -147,11 +142,3 @@ class PSBTv2:
             result += self.serialize_section(output_fields)
         
         return result
-
-def create_outpoint(txid: bytes, vout: int) -> bytes:
-    """Create a Bitcoin outpoint (32 byte txid + 4 byte vout)"""
-    return txid + struct.pack('<I', vout)
-
-def create_witness_utxo(amount: int, script_pubkey: bytes) -> bytes:
-    """Create witness UTXO field value"""
-    return struct.pack('<Q', amount) + compact_size_uint(len(script_pubkey)) + script_pubkey

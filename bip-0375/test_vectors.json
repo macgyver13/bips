@@ -1,0 +1,117 @@
+{
+    "description": "BIP 375 Test Vectors - Sending Silent Payments with PSBTs",
+    "version": "1.0",
+    "invalid": [
+        {
+            "description": "Missing DLEQ proof for ECDH share",
+            "psbt": "TODO_base64_encoded_psbt",
+            "error": "PSBT_IN_SP_ECDH_SHARE without corresponding PSBT_IN_SP_DLEQ"
+        },
+        {
+            "description": "Invalid DLEQ proof",
+            "psbt": "TODO_base64_encoded_psbt", 
+            "error": "DLEQ proof verification failed"
+        },
+        {
+            "description": "Mixed segwit versions with silent payments",
+            "psbt": "TODO_base64_encoded_psbt",
+            "error": "Silent payment outputs present with segwit version > 1 inputs"
+        },
+        {
+            "description": "Malformed silent payment address info",
+            "psbt": "TODO_base64_encoded_psbt",
+            "error": "PSBT_OUT_SP_V0_INFO wrong size (expected 66 bytes)"
+        },
+        {
+            "description": "Missing output script computation",
+            "psbt": "TODO_base64_encoded_psbt",
+            "error": "PSBT_OUT_SP_V0_INFO present but PSBT_OUT_SCRIPT not computed"
+        },
+        {
+            "description": "Incorrect output script derivation",
+            "psbt": "TODO_base64_encoded_psbt",
+            "error": "PSBT_OUT_SCRIPT does not match BIP 352 derivation from ECDH shares"
+        },
+        {
+            "description": "Global and per-input ECDH shares mixed",
+            "psbt": "TODO_base64_encoded_psbt",
+            "error": "Both PSBT_GLOBAL_SP_ECDH_SHARE and PSBT_IN_SP_ECDH_SHARE present for same scan key"
+        },
+        {
+            "description": "Non-SIGHASH_ALL signature with silent payments",
+            "psbt": "TODO_base64_encoded_psbt", 
+            "error": "Silent payment outputs require SIGHASH_ALL signatures only"
+        },
+        {
+            "description": "ECDH share without corresponding input public key",
+            "psbt": "TODO_base64_encoded_psbt",
+            "error": "PSBT_IN_SP_ECDH_SHARE present but input public key unavailable"
+        },
+        {
+            "description": "Invalid scan key in ECDH share",
+            "psbt": "TODO_base64_encoded_psbt",
+            "error": "Scan key in ECDH share is not a valid compressed public key"
+        }
+    ],
+    "valid": [
+        {
+            "description": "Single signer with global ECDH share",
+            "psbt": "TODO_base64_encoded_psbt",
+            "note": "One entity controls all inputs, uses global approach for efficiency"
+        },
+        {
+            "description": "Multi-party with per-input ECDH shares", 
+            "psbt": "TODO_base64_encoded_psbt",
+            "note": "Two signers each contribute ECDH shares for their respective inputs"
+        },
+        {
+            "description": "Silent payment with change detection",
+            "psbt": "TODO_base64_encoded_psbt",
+            "note": "Uses PSBT_OUT_SP_V0_LABEL and BIP32 derivation for change identification"
+        },
+        {
+            "description": "Multiple silent payment outputs to same scan key",
+            "psbt": "TODO_base64_encoded_psbt",
+            "note": "Two outputs to same silent payment address, different k values"
+        },
+        {
+            "description": "Mixed regular and silent payment outputs",
+            "psbt": "TODO_base64_encoded_psbt",
+            "note": "Transaction with both regular P2WPKH outputs and silent payment outputs"
+        },
+        {
+            "description": "Hardware wallet coordination",
+            "psbt": "TODO_base64_encoded_psbt",
+            "note": "Per-input ECDH shares with DLEQ proofs for hardware wallet verification"
+        },
+        {
+            "description": "Complex multisig with silent payments",
+            "psbt": "TODO_base64_encoded_psbt",
+            "note": "2-of-3 multisig inputs sending to silent payment address"
+        },
+        {
+            "description": "Silent payment with minimal fields",
+            "psbt": "TODO_base64_encoded_psbt", 
+            "note": "Only required fields present, no optional derivation paths"
+        },
+        {
+            "description": "Large transaction with multiple silent payments",
+            "psbt": "TODO_base64_encoded_psbt",
+            "note": "10 inputs, 5 outputs including 3 different silent payment addresses"
+        },
+        {
+            "description": "Edge case: single input single silent payment output",
+            "psbt": "TODO_base64_encoded_psbt",
+            "note": "Minimal valid silent payment transaction"
+        }
+    ],
+    "test_generation_notes": [
+        "All test vectors should be generated using test_generator.py",
+        "Each PSBT should be complete and ready for transaction extraction",
+        "Invalid cases should fail at specific validation points",
+        "Valid cases should successfully extract to broadcastable transactions",
+        "Include both compressed and uncompressed key scenarios where applicable",
+        "Test edge cases like maximum transaction sizes and field counts",
+        "Ensure DLEQ proofs are generated with proper randomness for security"
+    ]
+}

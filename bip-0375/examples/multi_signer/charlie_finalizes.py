@@ -31,13 +31,13 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from shared_utils import (
     get_transaction_inputs, get_charlie_private_key, verify_file_exists,
-    print_step_header, print_ecdh_coverage_status, print_workflow_progress,
-    get_recipient_address
+    print_step_header, print_ecdh_coverage_status, print_workflow_progress
 )
 
 # Add parent directories to path for PSBT imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from psbt_sp.psbt import SilentPaymentPSBT
+from psbt_sp.roles import PSBTExtractor
 def charlie_finalizes():
     """
     Charlie loads Bob's PSBT, finalizes everything, and extracts the transaction
@@ -65,7 +65,7 @@ def charlie_finalizes():
     inputs = get_transaction_inputs()
     charlie_private_key = get_charlie_private_key()
     inputs[2].private_key = charlie_private_key
-    print(f"   Set Charlie's private key for input 2")
+    print("   Set Charlie's private key for input 2")
 
     # Print current ECDH coverage
     print("\n Current ECDH coverage (before Charlie):")
@@ -77,10 +77,9 @@ def charlie_finalizes():
 
     # Charlie only controls input 2
     charlie_controlled_inputs = [2]
-    recipient_address = get_recipient_address()
-    scan_keys = [recipient_address.scan_key]
 
-    success = psbt.signer_role_partial(inputs, charlie_controlled_inputs, scan_keys)
+    # Scan keys will be auto-extracted from PSBT outputs
+    success = psbt.signer_role_partial(inputs, charlie_controlled_inputs)
 
     if not success:
         print("❌ SIGNER role failed for Charlie")
@@ -113,7 +112,7 @@ def charlie_finalizes():
 
         # Save transaction to hex file
         transaction_file = os.path.join(output_dir, "final_transaction.hex")
-        SilentPaymentPSBT.save_transaction(transaction_bytes, transaction_file)
+        PSBTExtractor.save_transaction(transaction_bytes, transaction_file)
 
         print(f"   Transaction extracted successfully ({len(transaction_bytes)} bytes)")
         print(f" Saved transaction to {transaction_file}")
@@ -139,7 +138,7 @@ def charlie_finalizes():
         # Update common working file (now finalized)
         psbt.save_psbt_to_file(current_file, metadata)
 
-        print(f" Multi-signer silent payment transaction complete!")
+        print(" Multi-signer silent payment transaction complete!")
 
         # Show final workflow progress
         print_workflow_progress()
@@ -151,9 +150,9 @@ def charlie_finalizes():
         inputs = get_transaction_inputs()
         total_input = sum(utxo.amount for utxo in inputs)
         print(f"   Total Input:  {total_input:,} sats")
-        print(f"   Change:       100,000 sats")
-        print(f"   Silent Payment: 340,000 sats")
-        print(f"   Fee:          10,000 sats")
+        print("   Change:       100,000 sats")
+        print("   Silent Payment: 340,000 sats")
+        print("   Fee:          10,000 sats")
         print(f"   Transaction:  {len(transaction_bytes)} bytes")
         print(f"   Hex: {transaction_bytes.hex()}")
 

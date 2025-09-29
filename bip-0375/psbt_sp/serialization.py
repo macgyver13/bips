@@ -1,12 +1,10 @@
 #!/usr/bin/env python3
 """
 PSBT v2 serialization utilities for BIP 375
-
-Consolidated PSBT serialization functions from psbt_utils.py and silent_payment_psbt.py
 """
 
 import struct
-from typing import List
+from typing import List, Tuple
 
 
 def compact_size_uint(n: int) -> bytes:
@@ -137,8 +135,104 @@ class PSBTv2:
         for input_fields in self.input_maps:
             result += self.serialize_section(input_fields)
         
-        # Output sections  
+        # Output sections
         for output_fields in self.output_maps:
             result += self.serialize_section(output_fields)
-        
+
         return result
+
+
+def parse_psbt_bytes(psbt_data: bytes) -> Tuple[List['PSBTField'], List[List['PSBTField']], List[List['PSBTField']]]:
+    """
+    Parse PSBT bytes into field lists
+
+    Args:
+        psbt_data: Raw PSBT bytes (must start with magic b'psbt\\xff')
+
+    Returns:
+        Tuple of (global_fields, input_maps, output_maps)
+
+    Raises:
+        ValueError: If PSBT data is invalid or truncated
+    """
+    from .constants import PSBTFieldType
+
+    if len(psbt_data) < 5 or psbt_data[:5] != b'psbt\xff':
+        raise ValueError("Invalid PSBT magic")
+
+    def parse_compact_size_uint(data: bytes, offset: int) -> Tuple[int, int]:
+        """Parse compact size uint, returns (value, new_offset)"""
+        if offset >= len(data):
+            raise ValueError("Not enough data")
+
+        first_byte = data[offset]
+        if first_byte < 0xfd:
+            return first_byte, offset + 1
+        elif first_byte == 0xfd:
+            return struct.unpack('<H', data[offset+1:offset+3])[0], offset + 3
+        elif first_byte == 0xfe:
+            return struct.unpack('<L', data[offset+1:offset+5])[0], offset + 5
+        else:
+            return struct.unpack('<Q', data[offset+1:offset+9])[0], offset + 9
+
+    def parse_section(data: bytes, offset: int) -> Tuple[List[PSBTField], int]:
+        """Parse a PSBT section (global, input, or output)"""
+        fields = []
+
+        while offset < len(data):
+            # Read key length
+            key_len, offset = parse_compact_size_uint(data, offset)
+            if key_len == 0:  # End of section
+                break
+
+            # Read key data
+            if offset + key_len > len(data):
+                raise ValueError("Truncated key data")
+            key_data = data[offset:offset + key_len]
+            offset += key_len
+
+            # Read value length
+            value_len, offset = parse_compact_size_uint(data, offset)
+
+            # Read value data
+            if offset + value_len > len(data):
+                raise ValueError("Truncated value data")
+            value_data = data[offset:offset + value_len]
+            offset += value_len
+
+            # Extract field type and create PSBTField
+            if key_data:
+                field_type = key_data[0]
+                key_content = key_data[1:] if len(key_data) > 1 else b''
+                fields.append(PSBTField(field_type, key_content, value_data))
+
+        return fields, offset
+
+    offset = 5  # Skip magic
+
+    # Parse global section
+    global_fields, offset = parse_section(psbt_data, offset)
+
+    # Determine number of inputs and outputs
+    num_inputs = 1  # Default
+    num_outputs = 1  # Default
+
+    for field in global_fields:
+        if field.field_type == PSBTFieldType.PSBT_GLOBAL_INPUT_COUNT:
+            num_inputs = field.value_data[0] if len(field.value_data) > 0 else 1
+        elif field.field_type == PSBTFieldType.PSBT_GLOBAL_OUTPUT_COUNT:
+            num_outputs = field.value_data[0] if len(field.value_data) > 0 else 1
+
+    # Parse input sections
+    input_maps = []
+    for _ in range(num_inputs):
+        input_fields, offset = parse_section(psbt_data, offset)
+        input_maps.append(input_fields)
+
+    # Parse output sections
+    output_maps = []
+    for _ in range(num_outputs):
+        output_fields, offset = parse_section(psbt_data, offset)
+        output_maps.append(output_fields)
+
+    return global_fields, input_maps, output_maps

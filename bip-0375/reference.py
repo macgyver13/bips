@@ -19,63 +19,32 @@ from dleq_374 import dleq_verify_proof
 from secp256k1_374 import GE
 
 
-# PSBT v2 + BIP 375 field types as class-based constants
+# Minimal PSBT field type constants for reference implementation
+# Full constant list available in psbt_sp/constants.py
 class PSBTFieldType:
-    # Standard PSBT v2 global fields
-    PSBT_GLOBAL_UNSIGNED_TX = 0x00
-    PSBT_GLOBAL_XPUB = 0x01
+    """Minimal BIP 375 field types needed for reference validator"""
+
+    # Global fields (required for validation)
     PSBT_GLOBAL_TX_VERSION = 0x02
-    PSBT_GLOBAL_VERSION = 0xfb
-    PSBT_GLOBAL_PROPRIETARY = 0xfc
     PSBT_GLOBAL_INPUT_COUNT = 0x04
     PSBT_GLOBAL_OUTPUT_COUNT = 0x05
-    PSBT_GLOBAL_TX_MODIFIABLE = 0x06
-    # BIP 375 Silent Payment global fields
+    PSBT_GLOBAL_VERSION = 0xfb
     PSBT_GLOBAL_SP_ECDH_SHARE = 0x07
     PSBT_GLOBAL_SP_DLEQ = 0x08
 
-    # Standard PSBT v2 input fields
-    PSBT_IN_NON_WITNESS_UTXO = 0x00
+    # Input fields (required for validation)
     PSBT_IN_WITNESS_UTXO = 0x01
     PSBT_IN_PARTIAL_SIG = 0x02
     PSBT_IN_SIGHASH_TYPE = 0x03
-    PSBT_IN_REDEEM_SCRIPT = 0x04
-    PSBT_IN_WITNESS_SCRIPT = 0x05
-    PSBT_IN_BIP32_DERIVATION = 0x06
-    PSBT_IN_FINAL_SCRIPTSIG = 0x07
-    PSBT_IN_FINAL_SCRIPTWITNESS = 0x08
-    PSBT_IN_POR_COMMITMENT = 0x09
-    PSBT_IN_RIPEMD160 = 0x0a
-    PSBT_IN_SHA256 = 0x0b
-    PSBT_IN_HASH160 = 0x0c
-    PSBT_IN_HASH256 = 0x0d
     PSBT_IN_PREVIOUS_TXID = 0x0e
     PSBT_IN_OUTPUT_INDEX = 0x0f
-    PSBT_IN_SEQUENCE = 0x10
-    PSBT_IN_REQUIRED_TIME_LOCKTIME = 0x11
-    PSBT_IN_REQUIRED_HEIGHT_LOCKTIME = 0x12
-    PSBT_IN_TAP_KEY_SIG = 0x13
-    PSBT_IN_TAP_SCRIPT_SIG = 0x14
-    PSBT_IN_TAP_LEAF_SCRIPT = 0x15
-    PSBT_IN_TAP_BIP32_DERIVATION = 0x16
     PSBT_IN_TAP_INTERNAL_KEY = 0x17
-    PSBT_IN_TAP_MERKLE_ROOT = 0x18
-    PSBT_IN_PROPRIETARY = 0xfc
-    # BIP 375 Silent Payment input fields  
     PSBT_IN_SP_ECDH_SHARE = 0x1d
     PSBT_IN_SP_DLEQ = 0x1e
 
-    # Standard PSBT v2 output fields
-    PSBT_OUT_REDEEM_SCRIPT = 0x00
-    PSBT_OUT_WITNESS_SCRIPT = 0x01
-    PSBT_OUT_BIP32_DERIVATION = 0x02
+    # Output fields (required for validation)
     PSBT_OUT_AMOUNT = 0x03
     PSBT_OUT_SCRIPT = 0x04
-    PSBT_OUT_TAP_INTERNAL_KEY = 0x05
-    PSBT_OUT_TAP_TREE = 0x06
-    PSBT_OUT_TAP_BIP32_DERIVATION = 0x07
-    PSBT_OUT_PROPRIETARY = 0xfc
-    # BIP 375 Silent Payment output fields
     PSBT_OUT_SP_V0_INFO = 0x09
     PSBT_OUT_SP_V0_LABEL = 0x0a
 
@@ -107,14 +76,19 @@ def validate_bip375_psbt(psbt_data: bytes, input_keys: List[Dict] = None) -> Tup
         # If no silent payment outputs, this is just a regular PSBT v2
         return True, "Valid PSBT v2 (no silent payments)"
     
-    # Rule 2: Critical structural validation - SP_V0_INFO field sizes
+    # Rule 2: Critical structural validation - SP_V0_INFO field sizes and PSBT_OUT_SCRIPT requirements
     for i, output_fields in enumerate(output_maps):
-        if PSBTFieldType.PSBT_OUT_SP_V0_INFO in output_fields:
+        # BIP375: Each output must have either PSBT_OUT_SCRIPT or PSBT_OUT_SP_V0_INFO (or both)
+        has_script = PSBTFieldType.PSBT_OUT_SCRIPT in output_fields
+        has_sp_info = PSBTFieldType.PSBT_OUT_SP_V0_INFO in output_fields
+
+        if not has_script and not has_sp_info:
+            return False, f"Output {i} must have either PSBT_OUT_SCRIPT or PSBT_OUT_SP_V0_INFO"
+
+        if has_sp_info:
             sp_info = output_fields[PSBTFieldType.PSBT_OUT_SP_V0_INFO]
             if len(sp_info) != 66:  # 33 + 33 bytes for scan_key + spend_key
                 return False, f"Output {i} SP_V0_INFO has wrong size ({len(sp_info)} bytes, expected 66)"
-    
-    # TODO: Must contain PSBT_OUT_SCRIPT and/or PSBTFieldType.PSBT_OUT_SP_V0_INFO
 
     # Rule 3: Critical structural validation - ECDH shares must exist
     has_global_ecdh = PSBTFieldType.PSBT_GLOBAL_SP_ECDH_SHARE in global_fields
@@ -535,12 +509,116 @@ def run_test_case(psbt_b64: str,
         
         # Check if proof verification succeeded
         if not proof_verified:
-            return False, f"DLEQ proof verification failed for scan key {scan_key_hex[:16]}..."
+            return False, f"DLEQ proof verification failed for scan key {scan_key_hex}"
     
     return True, "Enhanced validation passed"
 
+
+# ==============================================================================
+# Test Runner - Integrated from test_runner.py
+# ==============================================================================
+
+def load_test_vectors(filename: str) -> Dict:
+    """Load test vectors from JSON file"""
+    import json
+    import sys
+    try:
+        with open(filename, 'r') as f:
+            return json.load(f)
+    except FileNotFoundError:
+        print(f"Error: Test vector file '{filename}' not found")
+        sys.exit(1)
+    except json.JSONDecodeError as e:
+        print(f"Error: Invalid JSON in test vector file: {e}")
+        sys.exit(1)
+
+
+def parse_test(test_vector: Dict) -> tuple:
+    """Parse test vector"""
+    psbt_b64 = test_vector['psbt']
+    input_keys = test_vector.get('input_keys', [])
+    expected_ecdh_shares = test_vector.get('expected_ecdh_shares', [])
+
+    return psbt_b64, input_keys, expected_ecdh_shares
+
+
+def run_tests(test_data: Dict, verbose: bool = False) -> None:
+    """Run all complete test cases"""
+
+    print("BIP 375 Reference Implementation - Test Runner")
+    print("=" * 50)
+    print(f"Description: {test_data['description']}")
+    print(f"Version: {test_data['version']}")
+    print(f"Invalid test cases: {len(test_data['invalid'])}")
+    print(f"Valid test cases: {len(test_data['valid'])}")
+
+    test_num = 1
+
+    # Run invalid test cases
+    print("\n=== Running Invalid Test Cases ===")
+    for test_case in test_data['invalid']:
+
+        description = test_case['description']
+        expected_error = test_case.get('comment', 'unknown error')
+
+        print(f"Test {test_num}: {description}")
+
+        psbt_b64, input_keys, expected_ecdh_shares = parse_test(test_case)
+
+        # Run the enhanced test case
+        is_valid, error_msg = run_test_case(
+            psbt_b64=psbt_b64,
+            input_keys=input_keys,
+            expected_ecdh_shares=expected_ecdh_shares
+        )
+
+        assert not is_valid, error_msg
+        if verbose:
+            print(f"     Comment: {expected_error}")
+            print(f"     Details: {error_msg}")
+        test_num += 1
+
+    # Run valid test cases
+    print()
+    print("=== Running Valid Test Cases ===")
+    for test_case in test_data['valid']:
+        description = test_case['description']
+
+        print(f"Test {test_num}: {description}")
+        if verbose:
+            print(f"     Comment: {test_case.get('comment', '')}")
+
+        psbt_b64, input_keys, expected_ecdh_shares = parse_test(test_case)
+
+        # Run the enhanced test case
+        is_valid, error_msg = run_test_case(
+            psbt_b64=psbt_b64,
+            input_keys=input_keys,
+            expected_ecdh_shares=expected_ecdh_shares
+        )
+
+        assert is_valid, error_msg
+        test_num += 1
+
+    print(f"\n✓ All {test_num - 1} tests passed")
+
+
 if __name__ == "__main__":
-    print("BIP 375 Reference Implementation")
-    print("Use test_runner.py -f test_vectors.json")
-    
-    # TODO: Add basic demonstration once functions are implemented
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description='BIP 375 Reference Implementation - Test Runner',
+        epilog='For production use, see the psbt_sp package.'
+    )
+    parser.add_argument('--test-file', '-f', default='test_vectors.json',
+                      help='Test vector file to run (default: test_vectors.json)')
+    parser.add_argument('--verbose', '-v', action='store_true',
+                      help='Show detailed error messages and exception details')
+
+    args = parser.parse_args()
+
+    # Load test vectors
+    test_data = load_test_vectors(args.test_file)
+
+    # Run tests
+    run_tests(test_data, args.verbose)

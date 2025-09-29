@@ -16,7 +16,7 @@ import os
 
 # Add parent directories to path for imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-from psbt_sp.psbt import SilentPaymentAddress, SilentPaymentPSBT
+from psbt_sp.psbt import SilentPaymentAddress
 from psbt_sp.crypto import Wallet, PublicKey, UTXO
 import hashlib
 

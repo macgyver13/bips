@@ -2,16 +2,14 @@
 """
 Deterministic cryptographic utilities for BIP 375
 
-Consolidated key generation functions from test_generator.py and silent_payment_psbt.py
 """
 
 from dataclasses import dataclass
 import hashlib
 import hmac
 import struct
-from typing import Tuple, Optional, List
+from typing import Tuple, Optional
 from secp256k1_374 import GE, G
-import secrets
 
 
 class PrivateKey(int):
@@ -101,11 +99,8 @@ class PublicKey(GE):
             return self.bytes + other
         else:
             # Try elliptic curve addition as fallback
-            try:
-                result = super().__add__(other)
-                return PublicKey(result)
-            except:
-                return NotImplemented
+            result = super().__add__(other)
+            return PublicKey(result)
     
     def __sub__(self, other):
         """Override subtraction to return PublicKey"""

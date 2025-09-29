@@ -27,7 +27,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from shared_utils import (
     get_transaction_inputs, get_transaction_outputs, get_alice_private_key,
     print_step_header, print_scenario_overview, print_ecdh_coverage_status,
-    print_workflow_progress, get_recipient_address, reset_workflow
+    print_workflow_progress, reset_workflow
 )
 
 # Add parent directories to path for PSBT imports
@@ -50,7 +50,7 @@ def alice_creates():
             print("🧹 Cleaning up current working PSBT...")
             try:
                 os.remove(current_file)
-                print(f"   Removed current_psbt.json")
+                print("   Removed current_psbt.json")
             except OSError:
                 pass
             print()
@@ -60,7 +60,6 @@ def alice_creates():
     # Get transaction data
     inputs = get_transaction_inputs()
     outputs = get_transaction_outputs()
-    recipient_address = get_recipient_address()
 
     print("  CREATOR: Setting up PSBT structure...")
     psbt = SilentPaymentPSBT()
@@ -72,7 +71,7 @@ def alice_creates():
     # Set Alice's private key for input 0
     alice_private_key = get_alice_private_key()
     inputs[0].private_key = alice_private_key
-    print(f"   Set Alice's private key for input 0")
+    print("   Set Alice's private key for input 0")
 
     print(" SIGNER (Alice): Processing input 0...")
     print("   Computing ECDH share and DLEQ proof for input 0")
@@ -81,9 +80,9 @@ def alice_creates():
 
     # Alice only controls input 0
     alice_controlled_inputs = [0]
-    scan_keys = [recipient_address.scan_key]
 
-    success = psbt.signer_role_partial(inputs, alice_controlled_inputs, scan_keys)
+    # Scan keys will be auto-extracted from PSBT outputs
+    success = psbt.signer_role_partial(inputs, alice_controlled_inputs)
 
     if not success:
         print("❌ SIGNER role failed for Alice")

@@ -25,8 +25,7 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from shared_utils import (
     get_transaction_inputs, get_bob_private_key, verify_file_exists,
-    print_step_header, print_ecdh_coverage_status, print_workflow_progress,
-    get_recipient_address
+    print_step_header, print_ecdh_coverage_status, print_workflow_progress
 )
 
 # Add parent directories to path for PSBT imports
@@ -59,7 +58,7 @@ def bob_signs():
     inputs = get_transaction_inputs()
     bob_private_key = get_bob_private_key()
     inputs[1].private_key = bob_private_key
-    print(f"   Set Bob's private key for input 1")
+    print("   Set Bob's private key for input 1")
 
     # Print current ECDH coverage
     print("\n Current ECDH coverage (before Bob):")
@@ -70,10 +69,9 @@ def bob_signs():
 
     # Bob only controls input 1
     bob_controlled_inputs = [1]
-    recipient_address = get_recipient_address()
-    scan_keys = [recipient_address.scan_key]
 
-    success = psbt.signer_role_partial(inputs, bob_controlled_inputs, scan_keys)
+    # Scan keys will be auto-extracted from PSBT outputs
+    success = psbt.signer_role_partial(inputs, bob_controlled_inputs)
 
     if not success:
         print("❌ SIGNER role failed for Bob")

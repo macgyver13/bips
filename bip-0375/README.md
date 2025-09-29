@@ -2,60 +2,60 @@
 
 This directory contains the complete reference implementation for BIP 375: Sending Silent Payments with PSBTs.
 
-## 🎯 **Core Files** 
+## **Core Files**
 
-### Main Implementation
-- **`reference.py`** - Complete BIP 375 reference implementation with PSBT v2 parsing, validation, and enhanced DLEQ verification
+### Reference Implementation
+
+- **`reference.py`** - Minimal standalone BIP 375 validator with integrated test runner (executable)
+
+### Production Library
+
+- **`psbt_sp/`** - Complete PSBT v2 package for Silent Payments
+  - Full role-based implementation (Creator, Constructor, Updater, Signer, Input Finalizer, Extractor)
+  - Serialization, crypto utilities, and BIP 352 integration
+  - See psbt_sp package for production use
 
 ### Dependencies (from BIP 374)
-- **`dleq_374.py`** - BIP 374 DLEQ proof implementation (copied from official BIP 374 reference)
-- **`secp256k1_374.py`** - Secp256k1 implementation (copied from official BIP 374 reference)
 
-### Utilities
-- **`psbt_utils.py`** - PSBT v2 utilities for serialization and parsing
+- **`dleq_374.py`** - BIP 374 DLEQ proof implementation
+- **`secp256k1_374.py`** - Secp256k1 implementation
 
-## 🧪 **Testing**
-
-### Test Vectors
-- **`test_vectors.json`** - Test vectors with full cryptographic material (3 invalid + 2 valid scenarios)
+## **Testing**
 
 ### Test Infrastructure
-- **`test_generator.py`** - Deterministic test vector generator with real PSBT structures
-- **`test_runner.py`** - Test runner with full BIP 375 validation and enhanced DLEQ verification
 
-## 🏗️ **Supporting Directories**
+- **`test_vectors.json`** - Test vectors with full cryptographic material (7 invalid + 4 valid)
+- **`tests/test_generator.py`** - Deterministic test vector generator producing `test_vectors.json`
+- **`tests/test_vector_validator.py`** - Advanced validator using psbt_sp package (4-stage validation)
+- **`tests/validate_tests_examples.py`** - Validate test_vector_validator, reference, and examples
 
-- **`design_material/`** - Original design documents and planning materials
-- **`examples/`** - Example scripts demonstrating different BIP 375 scenarios
-- **`diagnostics/`** - Development artifacts and debug files (not needed for production)
+## **Examples**
 
-## 🚀 **Usage**
+- **`examples/`** - Production-ready examples demonstrating BIP 375 workflows
+  - [Hardware Signer](examples/hardware_signer/README.md) - Hardware wallet integration
+  - [Multi Party Signer](examples/multi_signer/README.md) - Collaborative signing workflow
 
-### Run All Tests
+## **Usage**
+
+### Run Reference Implementation Tests
+
 ```bash
-python test_runner.py
+python reference.py                    # Run all tests using test_vectors.json
+python reference.py -f custom.json     # Use custom test file
+python reference.py -v                 # Verbose mode with detailed errors
 ```
 
-### Generate New Test Vectors
+### Generate Test Vectors
+
 ```bash
-python test_generator.py
+python tests/test_generator.py               # Creates test_vectors.json in root directory
 ```
 
-## ✅ **Test Results**
+### Advanced Validation (psbt_sp package)
 
-**5/5 tests passing (100% success rate)**
+```bash
+python tests/test_vector_validator.py -v    # 4-stage validation with verbose output
+```
 
-- ✅ Missing DLEQ proof for ECDH share
-- ✅ Invalid DLEQ proof  
-- ✅ Non-SIGHASH_ALL signature with silent payments
-- ✅ Single signer with global ECDH share
-- ✅ Multi-party with per-input ECDH shares
+**Note:** Both test tools automatically look for `test_vectors.json` in the bip-0375 root directory.
 
-## 🔐 **Security Features**
-
-- **Complete BIP 375 validation** - All PSBT rules enforced
-- **Full BIP 374 DLEQ verification** - Cryptographic proof validation using official reference
-- **Multi-party support** - Both global and per-input ECDH share workflows
-- **Deterministic testing** - Reproducible test vectors with known cryptographic material
-
-This implementation provides production-ready BIP 375 functionality suitable for Bitcoin wallet integration.

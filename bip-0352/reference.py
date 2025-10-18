@@ -25,6 +25,7 @@ from bitcoin_utils import (
         VinInfo,
     )
 
+ZERO_TWEAK_HEX = "00" * 32
 
 def get_pubkey_from_input(vin: VinInfo) -> ECPubKey:
     if is_p2pkh(vin.prevout):
@@ -184,32 +185,31 @@ def scanning(b_scan: ECKey, B_spend: ECPubKey, A_sum: ECPubKey, input_hash: byte
                 k += 1
                 break
             elif labels:
-                m_G_sub = output - P_k
-                if m_G_sub.get_bytes(False).hex() in labels:
-                    P_km = P_k + m_G_sub
-                    wallet.append({
-                        "pub_key": P_km.get_bytes().hex(),
-                        "priv_key_tweak": (ECKey().set(t_k).add(
-                            bytes.fromhex(labels[m_G_sub.get_bytes(False).hex()])
-                        )).get_bytes().hex(),
-                    })
-                    outputs_to_check.remove(output)
-                    k += 1
-                    break
-                else:
-                    output.negate()
+                label_found = False
+                # Match label with output or negated output
+                for should_negate in [False, True]:
+                    if should_negate:
+                        output.negate()
                     m_G_sub = output - P_k
                     if m_G_sub.get_bytes(False).hex() in labels:
                         P_km = P_k + m_G_sub
+                        combined_tweak = ECKey().set(t_k).add(
+                            bytes.fromhex(labels[m_G_sub.get_bytes(False).hex()])
+                        )
+                        # Handle edge case where t_k + label = 0
+                        # This occurs when the output tweak equals the negative of the label
+                        # The output is still spendable with just b_spend (tweak is zero)
+                        combined_tweak_hex = combined_tweak.get_bytes().hex() if combined_tweak.valid else ZERO_TWEAK_HEX    
                         wallet.append({
                             "pub_key": P_km.get_bytes().hex(),
-                            "priv_key_tweak": (ECKey().set(t_k).add(
-                                bytes.fromhex(labels[m_G_sub.get_bytes(False).hex()])
-                            )).get_bytes().hex(),
+                            "priv_key_tweak": combined_tweak_hex,
                         })
                         outputs_to_check.remove(output)
                         k += 1
+                        label_found = True
                         break
+                if label_found:
+                    break
         else:
             break
     return wallet
@@ -298,14 +298,19 @@ if __name__ == "__main__":
             receiving_addresses.append(
                 encode_silent_payment_address(B_scan, B_spend, hrp="sp")
             )
-            if given["labels"]:
-                for label in given["labels"]:
-                    receiving_addresses.append(
-                        create_labeled_silent_payment_address(
-                            b_scan, B_spend, m=label, hrp="sp"
-                        )
-                    )
-
+            if "pre_computed_labels" in given:
+                pre_computed_labels = given["pre_computed_labels"]
+            else:
+                pre_computed_labels = {
+                    (generate_label(b_scan, label) * G).get_bytes(False).hex(): generate_label(b_scan, label).hex()
+                    for label in given["labels"]
+                }
+            for m_G_hex in pre_computed_labels.keys():
+                m_G = ECPubKey().set(bytes.fromhex(m_G_hex))
+                B_m_spend = B_spend + m_G
+                receiving_addresses.append(
+                    encode_silent_payment_address(B_scan, B_m_spend, hrp="sp", version=0)
+                )
             # Check that the silent payment addresses match for the given BIP32 seed and labels dictionary
             assert (receiving_addresses == expected["addresses"]), "Receiving addresses don't match"
             input_pub_keys = []
@@ -324,10 +329,6 @@ if __name__ == "__main__":
                     continue
                 assert A_sum.get_bytes(False).hex() == expected.get("input_pub_key_sum"), "A_sum did not match expected input_pub_key_sum"
                 input_hash = get_input_hash([vin.outpoint for vin in vins], A_sum)
-                pre_computed_labels = {
-                    (generate_label(b_scan, label) * G).get_bytes(False).hex(): generate_label(b_scan, label).hex()
-                    for label in given["labels"]
-                }
                 add_to_wallet = scanning(
                     b_scan=b_scan,
                     B_spend=B_spend,
@@ -341,7 +342,7 @@ if __name__ == "__main__":
             # Check that the private key is correct for the found output public key
             for output in add_to_wallet:
                 pub_key = ECPubKey().set(bytes.fromhex(output["pub_key"]))
-                full_private_key = b_spend.add(bytes.fromhex(output["priv_key_tweak"]))
+                full_private_key = b_spend if output["priv_key_tweak"] == ZERO_TWEAK_HEX else b_spend.add(bytes.fromhex(output["priv_key_tweak"]))
                 if full_private_key.get_pubkey().get_y() % 2 != 0:
                     full_private_key.negate()
 

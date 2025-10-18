@@ -1588,6 +1588,67 @@
         ]
     },
     {
+        "comment": "Receiving edge case: output tweak equals negative of label",
+        "note": "This is a constructed test vector demonstrating the edge case where t_k = -label. This scenario has a probability of 1 in 2^256 and cannot be reliably generated through real hash collisions. This test only includes receiving since the sending side cannot generate this scenario through the standard protocol.",
+        "sending": [],
+        "receiving": [
+            {
+                "given": {
+                    "vin": [
+                        {
+                            "txid": "f4184fc596403b9d638783cf57adfe4c75c605f6356fbc91338530e9831e9e16",
+                            "vout": 0,
+                            "scriptSig": "483046022100ad79e6801dd9a8727f342f31c71c4912866f59dc6e7981878e92c5844a0ce929022100fb0d2393e813968648b9753b7e9871d90ab3d815ebf91820d704b19f4ed224d621025a1e61f898173040e20616d43e9f496fba90338a39faa1ed98fcbaeee4dd9be5",
+                            "txinwitness": "",
+                            "prevout": {
+                                "scriptPubKey": {
+                                    "hex": "76a91419c2f3ae0ca3b642bd3e49598b8da89f50c1416188ac"
+                                }
+                            }
+                        },
+                        {
+                            "txid": "a1075db55d416d3ca199f55b6084e2115b9345e16c5cf302fc80e9d5fbf5d48d",
+                            "vout": 0,
+                            "scriptSig": "48304602210086783ded73e961037e77d49d9deee4edc2b23136e9728d56e4491c80015c3a63022100fda4c0f21ea18de29edbce57f7134d613e044ee150a89e2e64700de2d4e83d4e2103bd85685d03d111699b15d046319febe77f8de5286e9e512703cdee1bf3be3792",
+                            "txinwitness": "",
+                            "prevout": {
+                                "scriptPubKey": {
+                                    "hex": "76a914d9317c66f54ff0a152ec50b1d19c25be50c8e15988ac"
+                                }
+                            }
+                        }
+                    ],
+                    "outputs": [
+                        "5cc9856d6f8375350e123978daac200c260cb5b5ae83106cab90484dcd8fcf36"
+                    ],
+                    "key_material": {
+                        "spend_priv_key": "9d6ad855ce3417ef84e836892e5a56392bfba05fa5d97ccea30e266f540e08b3",
+                        "scan_priv_key": "0f694e068028a717f8af6b9411f9a133dd3565258714cc226594b34db90c1f2c"
+                    },
+                    "pre_computed_labels": {
+                        "02c3ce11463adc269ed33141b3249c483ae3cb3c3dd43d6df0d71304970c07c43e": "0bc74bfe865c3bd9d21ed6793f19331e576ed518e7ac826e81b1a4a10d4e524b"
+                    }
+                },
+                "expected": {
+                    "addresses": [
+                        "sp1qqgste7k9hx0qftg6qmwlkqtwuy6cycyavzmzj85c6qdfhjdpdjtdgqjuexzk6murw56suy3e0rd2cgqvycxttddwsvgxe2usfpxumr70xc9pkqwv",
+                        "sp1qqgste7k9hx0qftg6qmwlkqtwuy6cycyavzmzj85c6qdfhjdpdjtdgqek8atdwjnph7zantq8mwwatfd8sw2w33cuyusy37gx3supd85mtq5z9paq"
+                    ],
+                    "outputs": [
+                        {
+                            "priv_key_tweak": "0000000000000000000000000000000000000000000000000000000000000000",
+                            "pub_key": "5cc9856d6f8375350e123978daac200c260cb5b5ae83106cab90484dcd8fcf36",
+                            "signature": "68c33914713257b2556646267fbcc64805223cece9842b95bac1c87924f5135e743b4f78bd804c373e284d10900609e23ad342bc6a37b82124531260fbcc0636"
+                        }
+                    ],
+                    "input_pub_key_sum": "032562c1ab2d6bd45d7ca4d78f569999e5333dffd3ac5263924fd00d00dedc4bee",
+                    "tweak": "024ac253c216532e961988e2a8ce266a447c894c781e52ef6cee902361db960004",
+                    "shared_secret": "028158aff7d61ea66b2fa7f555bc3c5937d1debbde16423d630f9aa7943e14d80d"
+                }
+            }
+        ]
+    },
+    {
         "comment": "Receiving with labels: large label integer",
         "sending": [
             {

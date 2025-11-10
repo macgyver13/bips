@@ -146,7 +146,7 @@ def get_transaction_outputs():
 
     return outputs
 
-def print_transaction_details(inputs, outputs, recipient_address=None):
+def print_transaction_details(inputs, outputs):
     """
     Print transaction details for manual validation
 

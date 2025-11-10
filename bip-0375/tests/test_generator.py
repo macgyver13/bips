@@ -109,13 +109,24 @@ class TestVectorGenerator:
 
     def add_base_input_fields(self, psbt: SilentPaymentPSBT, input_index: int,
                               prevout_txid: bytes, prevout_index: int,
-                              witness_utxo: bytes, sequence: int = 0xfffffffe):
-        """Add required PSBTv2 input fields"""
+                              witness_utxo: bytes, sequence: int = 0xfffffffe,
+                              input_pubkey: bytes = None):
+        """Add required PSBTv2 input fields with BIP32 derivation"""
         # Required PSBTv2 fields
         psbt.add_input_field(input_index, PSBTFieldType.PSBT_IN_PREVIOUS_TXID, b'', prevout_txid)
         psbt.add_input_field(input_index, PSBTFieldType.PSBT_IN_OUTPUT_INDEX, b'', struct.pack('<I', prevout_index))
         psbt.add_input_field(input_index, PSBTFieldType.PSBT_IN_WITNESS_UTXO, b'', witness_utxo)
         psbt.add_input_field(input_index, PSBTFieldType.PSBT_IN_SEQUENCE, b'', struct.pack('<I', sequence))
+        
+        # BIP-174: Add BIP32 derivation for pubkey exposure (standard method)
+        # This allows validators to extract the public key for DLEQ verification
+        if input_pubkey:
+            psbt.add_input_field(
+                input_index,
+                PSBTFieldType.PSBT_IN_BIP32_DERIVATION,
+                input_pubkey,  # key = 33-byte compressed pubkey
+                b''            # value = empty (privacy-preserving, no path disclosure)
+            )
 
     # Invalid Test Case Generators
     def generate_missing_dleq_test(self) -> GenTestVector:
@@ -134,7 +145,8 @@ class TestVectorGenerator:
         witness_script = bytes([0x00, 0x14]) + hashlib.sha256(input_pub.bytes).digest()[:20]  # P2WPKH
         witness_utxo = create_witness_utxo(100000, witness_script)
 
-        self.add_base_input_fields(psbt, 0, prevout_txid, 0, witness_utxo)
+        self.add_base_input_fields(psbt, 0, prevout_txid, 0, witness_utxo,
+                                   input_pubkey=input_pub.bytes)
 
         # Add ECDH share WITHOUT DLEQ proof (this should trigger error)
         psbt.add_input_field(0, PSBTFieldType.PSBT_IN_SP_ECDH_SHARE, scan_pub.bytes, ecdh_result.to_bytes_compressed())
@@ -206,7 +218,8 @@ class TestVectorGenerator:
         witness_script = bytes([0x00, 0x14]) + hashlib.sha256(input_pub.bytes).digest()[:20]
         witness_utxo = create_witness_utxo(100000, witness_script)
 
-        self.add_base_input_fields(psbt, 0, prevout_txid, 0, witness_utxo)
+        self.add_base_input_fields(psbt, 0, prevout_txid, 0, witness_utxo,
+                                   input_pubkey=input_pub.bytes)
 
         # Add ECDH share WITH INVALID DLEQ proof
         psbt.add_input_field(0, PSBTFieldType.PSBT_IN_SP_ECDH_SHARE, scan_pub.bytes, ecdh_result.to_bytes_compressed())
@@ -272,7 +285,8 @@ class TestVectorGenerator:
         witness_script = bytes([0x00, 0x14]) + hashlib.sha256(input_pub.bytes).digest()[:20]
         witness_utxo = create_witness_utxo(100000, witness_script)
 
-        self.add_base_input_fields(psbt, 0, prevout_txid, 0, witness_utxo)
+        self.add_base_input_fields(psbt, 0, prevout_txid, 0, witness_utxo,
+                                   input_pubkey=input_pub.bytes)
 
         # Add NON-SIGHASH_ALL signature type (this should trigger error)
         psbt.add_input_field(0, PSBTFieldType.PSBT_IN_SIGHASH_TYPE, b'', struct.pack('<I', 0x02))  # SIGHASH_NONE
@@ -343,7 +357,8 @@ class TestVectorGenerator:
         witness_script = bytes([0x52, 0x20]) + hashlib.sha256(b"segwit_v2_script").digest()  # Hypothetical Segwit v2
         witness_utxo = create_witness_utxo(100000, witness_script)
 
-        self.add_base_input_fields(psbt, 0, prevout_txid, 0, witness_utxo)
+        self.add_base_input_fields(psbt, 0, prevout_txid, 0, witness_utxo,
+                                   input_pubkey=input_pub.bytes)
         psbt.add_input_field(0, PSBTFieldType.PSBT_IN_SIGHASH_TYPE, b'', struct.pack('<I', 0x01))  # SIGHASH_ALL
 
         # Add valid ECDH share and proof
@@ -406,7 +421,8 @@ class TestVectorGenerator:
         witness_script = bytes([0x00, 0x14]) + hashlib.sha256(input_pub.bytes).digest()[:20]
         witness_utxo = create_witness_utxo(100000, witness_script)
 
-        self.add_base_input_fields(psbt, 0, prevout_txid, 0, witness_utxo)
+        self.add_base_input_fields(psbt, 0, prevout_txid, 0, witness_utxo,
+                                   input_pubkey=input_pub.bytes)
         psbt.add_input_field(0, PSBTFieldType.PSBT_IN_SIGHASH_TYPE, b'', struct.pack('<I', 0x01))  # SIGHASH_ALL
 
         # Add silent payment output WITHOUT any ECDH shares (should trigger error)
@@ -465,7 +481,8 @@ class TestVectorGenerator:
         witness_script = bytes([0x00, 0x14]) + hashlib.sha256(input_pub.bytes).digest()[:20]
         witness_utxo = create_witness_utxo(100000, witness_script)
 
-        self.add_base_input_fields(psbt, 0, prevout_txid, 0, witness_utxo)
+        self.add_base_input_fields(psbt, 0, prevout_txid, 0, witness_utxo,
+                                   input_pubkey=input_pub.bytes)
         psbt.add_input_field(0, PSBTFieldType.PSBT_IN_SIGHASH_TYPE, b'', struct.pack('<I', 0x01))  # SIGHASH_ALL
 
         # Add silent payment output
@@ -527,7 +544,8 @@ class TestVectorGenerator:
         witness_script = bytes([0x00, 0x14]) + hashlib.sha256(input_pub.bytes).digest()[:20]
         witness_utxo = create_witness_utxo(100000, witness_script)
 
-        self.add_base_input_fields(psbt, 0, prevout_txid, 0, witness_utxo)
+        self.add_base_input_fields(psbt, 0, prevout_txid, 0, witness_utxo,
+                                   input_pubkey=input_pub.bytes)
         psbt.add_input_field(0, PSBTFieldType.PSBT_IN_SIGHASH_TYPE, b'', struct.pack('<I', 0x01))  # SIGHASH_ALL
 
         # Add valid ECDH share and proof
@@ -603,7 +621,8 @@ class TestVectorGenerator:
         witness_script = bytes([0x00, 0x14]) + hashlib.sha256(input_pub.bytes).digest()[:20]
         witness_utxo = create_witness_utxo(100000, witness_script)
 
-        self.add_base_input_fields(psbt, 0, prevout_txid, 0, witness_utxo)
+        self.add_base_input_fields(psbt, 0, prevout_txid, 0, witness_utxo,
+                                   input_pubkey=input_pub.bytes)
         psbt.add_input_field(0, PSBTFieldType.PSBT_IN_SIGHASH_TYPE, b'', struct.pack('<I', 0x01))  # SIGHASH_ALL
 
         # Add silent payment output with computed script
@@ -675,7 +694,8 @@ class TestVectorGenerator:
             witness_script = bytes([0x00, 0x14]) + hashlib.sha256(input_pub.bytes).digest()[:20]
             witness_utxo = create_witness_utxo(50000, witness_script)
 
-            self.add_base_input_fields(psbt, i, prevout_txid, 0, witness_utxo)
+            self.add_base_input_fields(psbt, i, prevout_txid, 0, witness_utxo,
+                                       input_pubkey=input_pub.bytes)
             psbt.add_input_field(i, PSBTFieldType.PSBT_IN_SIGHASH_TYPE, b'', struct.pack('<I', 0x01))  # SIGHASH_ALL
 
             # Add per-input ECDH share and DLEQ proof
@@ -762,7 +782,8 @@ class TestVectorGenerator:
         witness_script = bytes([0x00, 0x14]) + hashlib.sha256(input_pub.bytes).digest()[:20]
         witness_utxo = create_witness_utxo(100000, witness_script)
 
-        self.add_base_input_fields(psbt, 0, prevout_txid, 0, witness_utxo)
+        self.add_base_input_fields(psbt, 0, prevout_txid, 0, witness_utxo,
+                                   input_pubkey=input_pub.bytes)
         psbt.add_input_field(0, PSBTFieldType.PSBT_IN_SIGHASH_TYPE, b'', struct.pack('<I', 0x01))  # SIGHASH_ALL
 
         # Add global ECDH share and DLEQ proof
@@ -849,7 +870,8 @@ class TestVectorGenerator:
         witness_script = bytes([0x00, 0x14]) + hashlib.sha256(input_pub.bytes).digest()[:20]
         witness_utxo = create_witness_utxo(100000, witness_script)
 
-        self.add_base_input_fields(psbt, 0, prevout_txid, 0, witness_utxo)
+        self.add_base_input_fields(psbt, 0, prevout_txid, 0, witness_utxo,
+                                   input_pubkey=input_pub.bytes)
         psbt.add_input_field(0, PSBTFieldType.PSBT_IN_SIGHASH_TYPE, b'', struct.pack('<I', 0x01))  # SIGHASH_ALL
 
         # Add global ECDH share and DLEQ proof

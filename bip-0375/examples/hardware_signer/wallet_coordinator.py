@@ -48,7 +48,7 @@ def create_psbt():
     recipient_address = get_recipient_address()
 
     # Display transaction details for user validation
-    print_transaction_details(inputs, outputs, recipient_address)
+    print_transaction_details(inputs, outputs)
 
     # Create PSBT
     psbt = SilentPaymentPSBT()

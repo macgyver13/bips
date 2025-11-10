@@ -36,6 +36,7 @@ class PSBTFieldType:
     PSBT_IN_WITNESS_UTXO = 0x01
     PSBT_IN_PARTIAL_SIG = 0x02
     PSBT_IN_SIGHASH_TYPE = 0x03
+    PSBT_IN_BIP32_DERIVATION = 0x06
     PSBT_IN_PREVIOUS_TXID = 0x0e
     PSBT_IN_OUTPUT_INDEX = 0x0f
     PSBT_IN_TAP_INTERNAL_KEY = 0x17
@@ -194,12 +195,14 @@ def parse_psbt_structure(psbt_data: bytes) -> Tuple[Dict[int, bytes], List[Dict[
                 field_type = key_data[0]
                 key_content = key_data[1:] if len(key_data) > 1 else b''
                 
-                # For BIP 375 fields, store both key and value
+                # For BIP 375 and BIP-174 key-value fields, store both key and value
                 if field_type in [
                     PSBTFieldType.PSBT_GLOBAL_SP_ECDH_SHARE,
                     PSBTFieldType.PSBT_GLOBAL_SP_DLEQ,
                     PSBTFieldType.PSBT_IN_SP_ECDH_SHARE,
-                    PSBTFieldType.PSBT_IN_SP_DLEQ
+                    PSBTFieldType.PSBT_IN_SP_DLEQ,
+                    PSBTFieldType.PSBT_IN_BIP32_DERIVATION,
+                    PSBTFieldType.PSBT_IN_PARTIAL_SIG
                 ]:
                     fields[field_type] = {
                         'key': key_content,
@@ -284,8 +287,60 @@ def validate_global_dleq_proof(global_fields: Dict[int, bytes], input_maps: List
     
     A_combined = None
     
-    # Method 1: Use test vector input keys if available (preferred)
-    if input_keys:
+    # Method 1: Extract and combine public keys from PSBT fields (preferred, BIP-174 standard)
+    for input_fields in input_maps:
+        input_pubkey = None
+        
+        # Try BIP32 derivation field (highest priority)
+        if PSBTFieldType.PSBT_IN_BIP32_DERIVATION in input_fields:
+            derivation_data = input_fields[PSBTFieldType.PSBT_IN_BIP32_DERIVATION]
+            # BIP32 derivation is stored as key-value pairs in PSBT
+            # For BIP-375 test vectors: key = 33-byte pubkey, value = empty (privacy-preserving)
+            # We need to parse the field to extract pubkey from the key part
+            if isinstance(derivation_data, dict):
+                # Structured format from parse_section
+                pubkey_candidate = derivation_data.get('key', b'')
+                if len(pubkey_candidate) == 33:
+                    try:
+                        input_pubkey = GE.from_bytes(pubkey_candidate)
+                    except Exception:
+                        pass
+            elif len(derivation_data) >= 33:
+                # Raw bytes format - try first 33 bytes
+                try:
+                    input_pubkey = GE.from_bytes(derivation_data[:33])
+                except Exception:
+                    pass
+        
+        # Try Taproot internal key (fallback for Taproot inputs)
+        if input_pubkey is None and PSBTFieldType.PSBT_IN_TAP_INTERNAL_KEY in input_fields:
+            tap_key = input_fields[PSBTFieldType.PSBT_IN_TAP_INTERNAL_KEY]
+            if len(tap_key) == 32:
+                try:
+                    # Taproot uses x-only pubkeys, need to reconstruct
+                    input_pubkey = GE.from_bytes_xonly(tap_key)
+                except Exception:
+                    pass
+        
+        # Try partial signature field (fallback for signed PSBTs)
+        if input_pubkey is None and PSBTFieldType.PSBT_IN_PARTIAL_SIG in input_fields:
+            partial_sig_data = input_fields[PSBTFieldType.PSBT_IN_PARTIAL_SIG]
+            if isinstance(partial_sig_data, dict):
+                pubkey_candidate = partial_sig_data.get('key', b'')
+                if len(pubkey_candidate) == 33:
+                    try:
+                        input_pubkey = GE.from_bytes(pubkey_candidate)
+                    except Exception:
+                        pass
+        
+        if input_pubkey is not None:
+            if A_combined is None:
+                A_combined = input_pubkey
+            else:
+                A_combined = A_combined + input_pubkey
+    
+    # Method 2: Use test vector input keys if PSBT fields didn't provide pubkeys (fallback)
+    if A_combined is None and input_keys:
         for input_key in input_keys:
             input_pubkey_hex = input_key['public_key']
             input_pubkey_bytes = bytes.fromhex(input_pubkey_hex)
@@ -295,29 +350,6 @@ def validate_global_dleq_proof(global_fields: Dict[int, bytes], input_maps: List
                 A_combined = input_pubkey
             else:
                 A_combined = A_combined + input_pubkey
-    else:
-        # Method 2: Extract and combine public keys from PSBT fields
-        for input_fields in input_maps:
-            input_pubkey = None
-            
-            # Try BIP32 derivation field
-            if PSBTFieldType.PSBT_IN_BIP32_DERIVATION in input_fields:
-                derivation_data = input_fields[PSBTFieldType.PSBT_IN_BIP32_DERIVATION]
-                # BIP32 derivation format in PSBT: <pubkey><fingerprint><path>
-                for offset in range(0, len(derivation_data), 33 + 4 + 4):
-                    if offset + 33 <= len(derivation_data):
-                        try:
-                            pubkey_candidate = derivation_data[offset:offset + 33]
-                            input_pubkey = GE.from_bytes(pubkey_candidate)
-                            break
-                        except Exception:
-                            continue
-            
-            if input_pubkey is not None:
-                if A_combined is None:
-                    A_combined = input_pubkey
-                else:
-                    A_combined = A_combined + input_pubkey
     
     if A_combined is None:
         return False
@@ -367,45 +399,59 @@ def validate_input_dleq_proof(input_fields: Dict[int, bytes], input_keys: List[D
     # Extract input public key A from available sources
     A = None
     
-    # TODO: Sum private keys from inputs or use ECDH_SHARE?
-    # Method 1: Use test vector input keys if available and input_index is provided
-    if input_keys and input_index is not None and input_index < len(input_keys):
+    # Method 1: Try BIP32 derivation field (highest priority, BIP-174 standard)
+    if PSBTFieldType.PSBT_IN_BIP32_DERIVATION in input_fields:
+        derivation_data = input_fields[PSBTFieldType.PSBT_IN_BIP32_DERIVATION]
+        # BIP32 derivation is stored as key-value pairs in PSBT
+        # For BIP-375 test vectors: key = 33-byte pubkey, value = empty (privacy-preserving)
+        if isinstance(derivation_data, dict):
+            # Structured format from parse_section
+            pubkey_candidate = derivation_data.get('key', b'')
+            if len(pubkey_candidate) == 33:
+                try:
+                    A = GE.from_bytes(pubkey_candidate)
+                except Exception:
+                    pass
+        elif len(derivation_data) >= 33:
+            # Raw bytes format - try first 33 bytes
+            try:
+                A = GE.from_bytes(derivation_data[:33])
+            except Exception:
+                pass
+    
+    # Method 2: Try Taproot internal key (fallback for Taproot inputs)
+    if A is None and PSBTFieldType.PSBT_IN_TAP_INTERNAL_KEY in input_fields:
+        tap_key = input_fields[PSBTFieldType.PSBT_IN_TAP_INTERNAL_KEY]
+        if len(tap_key) == 32:
+            try:
+                # Taproot uses x-only pubkeys, need to reconstruct
+                A = GE.from_bytes_xonly(tap_key)
+            except Exception:
+                pass
+    
+    # Method 3: Try partial signature field (fallback for signed PSBTs)
+    if A is None and PSBTFieldType.PSBT_IN_PARTIAL_SIG in input_fields:
+        partial_sig_data = input_fields[PSBTFieldType.PSBT_IN_PARTIAL_SIG]
+        if isinstance(partial_sig_data, dict):
+            pubkey_candidate = partial_sig_data.get('key', b'')
+            if len(pubkey_candidate) == 33:
+                try:
+                    A = GE.from_bytes(pubkey_candidate)
+                except Exception:
+                    pass
+    
+    # Method 4: Use test vector input keys if PSBT fields didn't provide pubkey (fallback)
+    if A is None and input_keys and input_index is not None and input_index < len(input_keys):
         input_key = input_keys[input_index]
         pubkey_hex = input_key['public_key']
         pubkey_bytes = bytes.fromhex(pubkey_hex)
         try:
             A = GE.from_bytes(pubkey_bytes)
         except Exception:
-            pass  # Fall back to PSBT field extraction
+            pass
     
-    # Method 2: Try BIP32 derivation field (fallback)
-    if A is None and PSBTFieldType.PSBT_IN_BIP32_DERIVATION in input_fields:
-        derivation_data = input_fields[PSBTFieldType.PSBT_IN_BIP32_DERIVATION]
-        # BIP32 derivation format: <pubkey><fingerprint><path>
-        # We need the key part of the key-value pair
-        for offset in range(0, len(derivation_data), 33 + 4 + 4):  # pubkey + fingerprint + path element
-            if offset + 33 <= len(derivation_data):
-                try:
-                    pubkey_candidate = derivation_data[offset:offset + 33]
-                    A = GE.from_bytes(pubkey_candidate)
-                    break
-                except Exception:
-                    continue
-    
-    # Method 3: Try witness UTXO script extraction for P2WPKH (fallback)
-    if A is None and PSBTFieldType.PSBT_IN_WITNESS_UTXO in input_fields:
-        witness_utxo = input_fields[PSBTFieldType.PSBT_IN_WITNESS_UTXO]
-        if len(witness_utxo) >= 9:
-            script_len = witness_utxo[8]
-            if script_len == 22:  # P2WPKH script length
-                script = witness_utxo[9:9 + script_len]
-                if len(script) == 22 and script[0] == 0x00 and script[1] == 0x14:
-                    # P2WPKH script: OP_0 <20-byte pubkey hash>
-                    # We can't extract the pubkey directly from the hash
-                    pass
-    
-    # Method 4: Try other extraction methods if needed
-    assert A, "Could not extract public key to validate input dleq proof"
+    if A is None:
+        return False
     
     # Perform full DLEQ verification
     return dleq_verify_proof(A, B, C, proof)

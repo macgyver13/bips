@@ -135,9 +135,8 @@ def verify_transaction_details(auto_approve=False, attack_mode=False):
 
     inputs = get_transaction_inputs()
     outputs = get_transaction_outputs()
-    recipient_address = get_recipient_address()
 
-    print_transaction_details(inputs, outputs, recipient_address)
+    print_transaction_details(inputs, outputs)
 
     print("\n⚠️  VERIFY TRANSACTION ON DEVICE SCREEN")
     print("─" * 70)

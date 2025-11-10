@@ -122,3 +122,23 @@ def pubkey_to_p2wpkh_script(pubkey_point: GE) -> bytes:
     pubkey_bytes = pubkey_point.to_bytes_compressed()
     pubkey_hash = hashlib.new('ripemd160', hashlib.sha256(pubkey_bytes).digest()).digest()
     return b'\x00\x14' + pubkey_hash  # OP_0 + 20 bytes
+
+
+def pubkey_to_p2tr_script(pubkey_point: GE) -> bytes:
+    """
+    Convert public key to P2TR (Taproot) script
+
+    BIP 352 requires silent payment outputs to use P2TR (Taproot).
+    
+    Formula: OP_1 <32-byte-x-only-pubkey>
+    
+    Args:
+        pubkey_point: Public key point
+
+    Returns:
+        P2TR script: OP_1 (0x51) + 32 bytes (x-only public key)
+    """
+    # Get x-only public key (32 bytes) - BIP 340/341
+    pubkey_bytes = pubkey_point.to_bytes_compressed()
+    x_only = pubkey_bytes[1:]  # Remove first byte (02/03 parity), keep 32-byte x coordinate
+    return b'\x51\x20' + x_only  # OP_1 (0x51) + PUSH_32 (0x20) + 32 bytes

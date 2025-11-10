@@ -21,7 +21,8 @@ from .crypto import Wallet, PublicKey, UTXO, sign_p2wpkh_input
 from .bip352_crypto import (
     apply_label_to_spend_key,
     derive_silent_payment_output_pubkey,
-    pubkey_to_p2wpkh_script
+    pubkey_to_p2wpkh_script,
+    pubkey_to_p2tr_script
 )
 from dleq_374 import dleq_generate_proof
 
@@ -607,7 +608,7 @@ class PSBTInputFinalizer:
     Responsibilities:
     - Collect and combine ECDH shares from all signers
     - Compute final output public keys using BIP 352 protocol
-    - Generate P2WPKH scripts for silent payment outputs
+    - Generate P2TR scripts for silent payment outputs
     - Set TX_MODIFIABLE flags to False after computing scripts
     """
 
@@ -717,8 +718,8 @@ class PSBTInputFinalizer:
                 k
             )
 
-            # Create P2WPKH script
-            script_pubkey = pubkey_to_p2wpkh_script(final_pubkey_point)
+            # Create P2TR (Taproot) script - BIP 352 requires P2TR for silent payments
+            script_pubkey = pubkey_to_p2tr_script(final_pubkey_point)
 
             # Add PSBT_OUT_SCRIPT field
             output_fields.append(PSBTField(

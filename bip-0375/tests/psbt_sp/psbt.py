@@ -10,11 +10,11 @@ from typing import Dict, List, Tuple, Optional
 import struct
 
 from .constants import PSBTFieldType
-from secp256k1_374 import GE, G
+from secp256k1_374 import GE
 from .serialization import PSBTField
-from .crypto import Wallet, PublicKey, UTXO, sign_p2wpkh_input
+from .crypto import PublicKey, UTXO
 from .roles import PSBTConstructor, PSBTCreator, PSBTSigner, PSBTInputFinalizer
-from dleq_374 import dleq_generate_proof, dleq_verify_proof
+from dleq_374 import dleq_verify_proof
 import hashlib
 
 
@@ -1145,12 +1145,12 @@ class SilentPaymentPSBT:
 
         Note:
             This method delegates to the standalone save_psbt_to_file() function
-            in psbt_io.py, automatically providing psbt_base64 and psbt_json.
+            in psbt_io.py, automatically providing psbt and psbt_json.
         """
         from .psbt_io import save_psbt_to_file as _save_psbt_to_file
 
         _save_psbt_to_file(
-            psbt_base64=self.encode(),
+            psbt=self.encode(),
             filename=filename,
             metadata=metadata,
             psbt_json=self.to_json()

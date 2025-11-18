@@ -13,7 +13,7 @@ from .serialization import PSBTField, parse_psbt_bytes
 
 
 def save_psbt_to_file(
-    psbt_base64: str,
+    psbt: str,
     filename: str,
     metadata: Optional[Dict] = None,
     psbt_json: Optional[Dict] = None
@@ -22,7 +22,7 @@ def save_psbt_to_file(
     Save PSBT to JSON file with metadata for multi-signer workflows
 
     Args:
-        psbt_base64: Base64-encoded PSBT (source of truth)
+        psbt: Base64-encoded PSBT (source of truth)
         filename: File path to save to
         metadata: Optional metadata dict with step info, completed_by, etc.
         psbt_json: Optional JSON representation from psbt.to_json() for human inspection
@@ -30,7 +30,7 @@ def save_psbt_to_file(
 
     Note:
         The psbt_json parameter should be derived from psbt.to_json() and is included
-        only for human readability. All programmatic operations should use psbt_base64.
+        only for human readability. All programmatic operations should use psbt.
     """
     # Create default metadata if none provided
     if metadata is None:
@@ -41,7 +41,7 @@ def save_psbt_to_file(
 
     # Prepare JSON data
     json_data = {
-        'psbt_base64': psbt_base64,
+        'psbt': psbt,
         'metadata': metadata
     }
 
@@ -68,7 +68,7 @@ def load_psbt_from_file(filename: str) -> Tuple[List[PSBTField], List[List[PSBTF
         json_data = json.load(f)
 
     # Decode PSBT from base64
-    psbt_data = base64.b64decode(json_data['psbt_base64'])
+    psbt_data = base64.b64decode(json_data['psbt'])
 
     # Parse PSBT structure
     global_fields, input_maps, output_maps = parse_psbt_bytes(psbt_data)

@@ -21,7 +21,6 @@ from .crypto import Wallet, PublicKey, UTXO, sign_p2wpkh_input
 from .bip352_crypto import (
     apply_label_to_spend_key,
     derive_silent_payment_output_pubkey,
-    pubkey_to_p2wpkh_script,
     pubkey_to_p2tr_script
 )
 from dleq_374 import dleq_generate_proof

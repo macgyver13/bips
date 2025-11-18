@@ -24,16 +24,8 @@ This directory contains the complete reference implementation for BIP 375: Sendi
 
 ### Test Infrastructure
 
-- **`test_vectors.json`** - Test vectors with full cryptographic material (7 invalid + 4 valid)
-- **`tests/test_generator.py`** - Deterministic test vector generator producing `test_vectors.json`
-- **`tests/test_vector_validator.py`** - Advanced validator using psbt_sp package (4-stage validation)
-- **`tests/validate_tests_examples.py`** - Validate test_vector_validator, reference, and examples
-
-## **Examples**
-
-- **`examples/`** - Production-ready examples demonstrating BIP 375 workflows
-  - [Hardware Signer](examples/hardware_signer/README.md) - Hardware wallet integration
-  - [Multi Party Signer](examples/multi_signer/README.md) - Collaborative signing workflow
+- **`test_vectors.json`** - Test vectors with full cryptographic material (13 invalid + 4 valid)
+- **`tests/test_generator.py`** - Deterministic test vector generator producing`test_vectors.json`
 
 ## **Usage**
 
@@ -51,11 +43,4 @@ python reference.py -v                 # Verbose mode with detailed errors
 python tests/test_generator.py               # Creates test_vectors.json in root directory
 ```
 
-### Advanced Validation (psbt_sp package)
-
-```bash
-python tests/test_vector_validator.py -v    # 4-stage validation with verbose output
-```
-
-**Note:** Both test tools automatically look for `test_vectors.json` in the bip-0375 root directory.
-
+**Note:** Demo implementations can be found in [bip375-examples](https://github.com/macgyver13/bip375-examples/)

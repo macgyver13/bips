@@ -20,6 +20,7 @@ from dataclasses import dataclass, asdict
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from dleq_374 import dleq_generate_proof, dleq_verify_proof
+from bip352_utils import compute_bip352_output_script
 from psbt_sp.crypto import Wallet
 from psbt_sp.serialization import create_witness_utxo
 from psbt_sp.psbt import SilentPaymentPSBT
@@ -77,7 +78,7 @@ class GenTestVector:
 
 class TestVectorGenerator:
     """Generates complete BIP 375 test vectors for all scenarios"""
-    
+
     def __init__(self, seed: str = "bip375_complete_seed"):
         """Initialize with deterministic seed for reproducible results"""
         self.wallet = Wallet(seed)
@@ -151,10 +152,18 @@ class TestVectorGenerator:
         # Add ECDH share WITHOUT DLEQ proof (this should trigger error)
         psbt.add_input_field(0, PSBTFieldType.PSBT_IN_SP_ECDH_SHARE, scan_pub.bytes, ecdh_result.to_bytes_compressed())
         # Deliberately omit PSBT_IN_SP_DLEQ (0x1e)
+        psbt.add_input_field(0, PSBTFieldType.PSBT_IN_SIGHASH_TYPE, b'', struct.pack('<I', 0x01))  # SIGHASH_ALL
 
-        # Add silent payment output to trigger validation
+        # Add silent payment output with properly computed BIP-352 script
+        outpoints = [(prevout_txid, 0)]
+        output_script = compute_bip352_output_script(
+            outpoints=outpoints,
+            summed_pubkey_bytes=input_pub.bytes,
+            ecdh_share_bytes=ecdh_result.to_bytes_compressed(),
+            spend_pubkey_bytes=spend_pub.bytes,
+            k=0
+        )
         psbt.add_output_field(0, PSBTFieldType.PSBT_OUT_AMOUNT, b'', struct.pack('<Q', 95000))
-        output_script = bytes([0x51, 0x20]) + hashlib.sha256(b"silent_payment_script").digest()  # P2TR
         psbt.add_output_field(0, PSBTFieldType.PSBT_OUT_SCRIPT, b'', output_script)
         psbt.add_output_field(0, PSBTFieldType.PSBT_OUT_SP_V0_INFO, b'', scan_pub.bytes + spend_pub.bytes)
 
@@ -224,10 +233,18 @@ class TestVectorGenerator:
         # Add ECDH share WITH INVALID DLEQ proof
         psbt.add_input_field(0, PSBTFieldType.PSBT_IN_SP_ECDH_SHARE, scan_pub.bytes, ecdh_result.to_bytes_compressed())
         psbt.add_input_field(0, PSBTFieldType.PSBT_IN_SP_DLEQ, scan_pub.bytes, invalid_proof) # (invalid)
+        psbt.add_input_field(0, PSBTFieldType.PSBT_IN_SIGHASH_TYPE, b'', struct.pack('<I', 0x01))  # SIGHASH_ALL
 
-        # Add silent payment output
+        # Add silent payment output with properly computed BIP-352 script
         sp_info = scan_pub.bytes + spend_pub.bytes
-        output_script = bytes([0x51, 0x20]) + hashlib.sha256(b"silent_payment_script_1").digest()
+        outpoints = [(prevout_txid, 0)]
+        output_script = compute_bip352_output_script(
+            outpoints=outpoints,
+            summed_pubkey_bytes=input_pub.bytes,
+            ecdh_share_bytes=ecdh_result.to_bytes_compressed(),
+            spend_pubkey_bytes=spend_pub.bytes,
+            k=0
+        )
 
         psbt.add_output_field(0, PSBTFieldType.PSBT_OUT_AMOUNT, b'', struct.pack('<Q', 95000))
         psbt.add_output_field(0, PSBTFieldType.PSBT_OUT_SCRIPT, b'', output_script)
@@ -295,9 +312,17 @@ class TestVectorGenerator:
         psbt.add_input_field(0, PSBTFieldType.PSBT_IN_SP_ECDH_SHARE, scan_pub.bytes, ecdh_result.to_bytes_compressed())
         psbt.add_input_field(0, PSBTFieldType.PSBT_IN_SP_DLEQ, scan_pub.bytes, valid_proof)
 
-        # Add silent payment output
+        # Add silent payment output with properly computed BIP-352 script
+        # (should fail due to SIGHASH_NONE, not address mismatch)
         sp_info = scan_pub.bytes + spend_pub.bytes
-        output_script = bytes([0x51, 0x20]) + hashlib.sha256(b"silent_payment_script_2").digest()
+        outpoints = [(prevout_txid, 0)]
+        output_script = compute_bip352_output_script(
+            outpoints=outpoints,
+            summed_pubkey_bytes=input_pub.bytes,
+            ecdh_share_bytes=ecdh_result.to_bytes_compressed(),
+            spend_pubkey_bytes=spend_pub.bytes,
+            k=0
+        )
 
         psbt.add_output_field(0, PSBTFieldType.PSBT_OUT_AMOUNT, b'', struct.pack('<Q', 95000))
         psbt.add_output_field(0, PSBTFieldType.PSBT_OUT_SCRIPT, b'', output_script)
@@ -365,9 +390,17 @@ class TestVectorGenerator:
         psbt.add_input_field(0, PSBTFieldType.PSBT_IN_SP_ECDH_SHARE, scan_pub.bytes, ecdh_result.to_bytes_compressed())
         psbt.add_input_field(0, PSBTFieldType.PSBT_IN_SP_DLEQ, scan_pub.bytes, valid_proof)
 
-        # Add silent payment output
+        # Add silent payment output with properly computed BIP-352 script
+        # (should fail due to unsupported segwit version, not address mismatch)
         sp_info = scan_pub.bytes + spend_pub.bytes
-        output_script = bytes([0x51, 0x20]) + hashlib.sha256(b"silent_payment_script_3").digest()
+        outpoints = [(prevout_txid, 0)]
+        output_script = compute_bip352_output_script(
+            outpoints=outpoints,
+            summed_pubkey_bytes=input_pub.bytes,
+            ecdh_share_bytes=ecdh_result.to_bytes_compressed(),
+            spend_pubkey_bytes=spend_pub.bytes,
+            k=0
+        )
 
         psbt.add_output_field(0, PSBTFieldType.PSBT_OUT_AMOUNT, b'', struct.pack('<Q', 95000))
         psbt.add_output_field(0, PSBTFieldType.PSBT_OUT_SCRIPT, b'', output_script)
@@ -472,11 +505,7 @@ class TestVectorGenerator:
         ecdh_result = input_priv * scan_pub
         psbt = self.create_complete_psbt_base(1, 1)
 
-        # Add global ECDH share WITHOUT DLEQ proof
-        psbt.add_input_field(0, PSBTFieldType.PSBT_IN_SP_ECDH_SHARE, scan_pub.bytes, ecdh_result.to_bytes_compressed())
-        # Deliberately omit PSBT_GLOBAL_SP_DLEQ (0x08)
-
-        # Add complete input fields
+        # Add complete input fields first
         prevout_txid = hashlib.sha256("prevout_5".encode()).digest()
         witness_script = bytes([0x00, 0x14]) + hashlib.sha256(input_pub.bytes).digest()[:20]
         witness_utxo = create_witness_utxo(100000, witness_script)
@@ -485,9 +514,20 @@ class TestVectorGenerator:
                                    input_pubkey=input_pub.bytes)
         psbt.add_input_field(0, PSBTFieldType.PSBT_IN_SIGHASH_TYPE, b'', struct.pack('<I', 0x01))  # SIGHASH_ALL
 
-        # Add silent payment output
+        # Add global ECDH share WITHOUT DLEQ proof (this should trigger error)
+        psbt.add_global_field(PSBTFieldType.PSBT_GLOBAL_SP_ECDH_SHARE, scan_pub.bytes, ecdh_result.to_bytes_compressed())
+        # Deliberately omit PSBT_GLOBAL_SP_DLEQ (0x08)
+
+        # Add silent payment output with properly computed BIP-352 script
         sp_info = scan_pub.bytes + spend_pub.bytes
-        output_script = bytes([0x51, 0x20]) + hashlib.sha256(b"silent_payment_script_5").digest()
+        outpoints = [(prevout_txid, 0)]
+        output_script = compute_bip352_output_script(
+            outpoints=outpoints,
+            summed_pubkey_bytes=input_pub.bytes,
+            ecdh_share_bytes=ecdh_result.to_bytes_compressed(),
+            spend_pubkey_bytes=spend_pub.bytes,
+            k=0
+        )
 
         psbt.add_output_field(0, PSBTFieldType.PSBT_OUT_AMOUNT, b'', struct.pack('<Q', 95000))
         psbt.add_output_field(0, PSBTFieldType.PSBT_OUT_SCRIPT, b'', output_script)
@@ -593,7 +633,441 @@ class TestVectorGenerator:
             )],
             comment="wrong_sp_info_size"
         )
-    
+
+    def generate_mixed_input_types_test(self) -> GenTestVector:
+        """Mixed eligible and ineligible input types"""
+        input_priv_0, input_pub_0 = self.wallet.input_key_pair(0)
+        input_priv_1, input_pub_1 = self.wallet.input_key_pair(1)
+        input_priv_2, input_pub_2 = self.wallet.input_key_pair(2)
+        scan_pub = self.wallet.scan_pub
+        spend_pub = self.wallet.spend_pub
+
+        # Two inputs: one P2WPKH (eligible), one P2SH multisig (ineligible)
+        psbt = self.create_complete_psbt_base(2, 1)
+
+        # Input 0: P2WPKH (eligible)
+        prevout_txid_0 = hashlib.sha256("prevout_mixed_0".encode()).digest()
+        witness_script_0 = bytes([0x00, 0x14]) + hashlib.sha256(input_pub_0.bytes).digest()[:20]
+        witness_utxo_0 = create_witness_utxo(100000, witness_script_0)
+        self.add_base_input_fields(psbt, 0, prevout_txid_0, 0, witness_utxo_0, input_pubkey=input_pub_0.bytes)
+
+        # Input 1: P2SH 2-of-2 multisig (ineligible - multiple public keys)
+        # Create 2-of-2 multisig redeem script: OP_2 <pubkey1> <pubkey2> OP_2 OP_CHECKMULTISIG
+        redeem_script = bytes([0x52])  # OP_2
+        redeem_script += bytes([0x21]) + input_pub_1.to_bytes_compressed()  # 33-byte pubkey
+        redeem_script += bytes([0x21]) + input_pub_2.to_bytes_compressed()  # 33-byte pubkey
+        redeem_script += bytes([0x52, 0xae])  # OP_2 OP_CHECKMULTISIG
+
+        # P2SH scriptPubKey: OP_HASH160 <20-byte-hash> OP_EQUAL
+        redeem_script_hash = hashlib.new('ripemd160', hashlib.sha256(redeem_script).digest()).digest()
+        script_pubkey = bytes([0xa9, 0x14]) + redeem_script_hash + bytes([0x87])
+
+        # Create non-witness UTXO for P2SH
+        prev_tx = bytes([0x02, 0x00, 0x00, 0x00])  # version
+        prev_tx += bytes([0x01])  # 1 input
+        prev_tx += hashlib.sha256(b"p2sh_prev_input").digest()  # prev txid (not coinbase)
+        prev_tx += bytes([0x00, 0x00, 0x00, 0x00])  # prev vout (0)
+        prev_tx += bytes([0x00])  # scriptSig length
+        prev_tx += bytes([0xff, 0xff, 0xff, 0xff])  # sequence
+        prev_tx += bytes([0x01])  # 1 output
+        prev_tx += struct.pack('<Q', 150000)  # amount
+        prev_tx += bytes([len(script_pubkey)]) + script_pubkey
+        prev_tx += bytes([0x00, 0x00, 0x00, 0x00])  # locktime
+
+        # Compute the txid of prev_tx (double SHA256)
+        prevout_txid_1 = hashlib.sha256(hashlib.sha256(prev_tx).digest()).digest()
+
+        # Add required PSBTv2 fields for input 1
+        psbt.add_input_field(1, PSBTFieldType.PSBT_IN_PREVIOUS_TXID, b'', prevout_txid_1)
+        psbt.add_input_field(1, PSBTFieldType.PSBT_IN_OUTPUT_INDEX, b'', struct.pack('<I', 0))
+        psbt.add_input_field(1, PSBTFieldType.PSBT_IN_SEQUENCE, b'', struct.pack('<I', 0xfffffffe))
+        psbt.add_input_field(1, PSBTFieldType.PSBT_IN_NON_WITNESS_UTXO, b'', prev_tx)
+        psbt.add_input_field(1, PSBTFieldType.PSBT_IN_REDEEM_SCRIPT, b'', redeem_script)
+
+        # Only input 0 is eligible, so only use that for ECDH
+        ecdh_result = input_priv_0 * scan_pub
+
+        # Add per-input ECDH share for eligible input
+        psbt.add_input_field(0, PSBTFieldType.PSBT_IN_SP_ECDH_SHARE, scan_pub.bytes, ecdh_result.to_bytes_compressed())
+
+        # Generate DLEQ proof for input 0
+        dleq_proof = dleq_generate_proof(input_priv_0, scan_pub, Wallet.random_bytes())
+        psbt.add_input_field(0, PSBTFieldType.PSBT_IN_SP_DLEQ, scan_pub.bytes, dleq_proof)
+
+        # Compute proper BIP-352 output (using only eligible input)
+        outpoints = [(prevout_txid_0, 0)]
+        output_script = compute_bip352_output_script(
+            outpoints=outpoints,
+            summed_pubkey_bytes=input_pub_0.to_bytes_compressed(),
+            ecdh_share_bytes=ecdh_result.to_bytes_compressed(),
+            spend_pubkey_bytes=spend_pub.to_bytes_compressed(),
+            k=0
+        )
+
+        # Set output
+        psbt.add_output_field(0, PSBTFieldType.PSBT_OUT_AMOUNT, b'', struct.pack('<Q', 90000))
+        psbt.add_output_field(0, PSBTFieldType.PSBT_OUT_SCRIPT, b'', output_script)
+
+        # Add sp_info
+        sp_info = scan_pub.bytes + spend_pub.to_bytes_compressed()
+        psbt.add_output_field(0, PSBTFieldType.PSBT_OUT_SP_V0_INFO, b'', sp_info)
+
+        return GenTestVector(
+            description="Mixed eligible and ineligible input types",
+            psbt=base64.b64encode(psbt.serialize()).decode(),
+            input_keys=[
+                GenInputKey(
+                    input_index=0,
+                    private_key=input_priv_0.hex,
+                    public_key=input_pub_0.hex,
+                    prevout_txid=prevout_txid_0.hex(),
+                    prevout_index=0,
+                    prevout_scriptpubkey=witness_script_0.hex(),
+                    amount=100000,
+                    witness_utxo=witness_utxo_0.hex()
+                ),
+                GenInputKey(
+                    input_index=1,
+                    private_key=input_priv_1.hex,
+                    public_key=input_pub_1.hex,
+                    prevout_txid=prevout_txid_1.hex(),
+                    prevout_index=0,
+                    prevout_scriptpubkey=script_pubkey.hex(),
+                    amount=150000,
+                    witness_utxo=prev_tx.hex()  # non-witness UTXO for P2SH multisig
+                )
+            ],
+            scan_keys=[GenScanKey(
+                scan_pubkey=scan_pub.hex,
+                spend_pubkey=spend_pub.hex
+            )],
+            expected_ecdh_shares=[GenECDHShare(
+                scan_key=scan_pub.hex,
+                ecdh_result=ecdh_result.to_bytes_compressed().hex(),
+                dleq_proof=dleq_proof.hex(),
+                is_global=False,
+                input_index=0
+            )],
+            expected_outputs=[GenOutput(
+                output_index=0,
+                amount=90000,
+                script=output_script.hex(),
+                is_silent_payment=True,
+                sp_info=sp_info.hex()
+            )],
+            comment="P2WPKH and P2SH multisig mixed - only P2WPKH is eligible"
+        )
+
+    def generate_wrong_ecdh_share_size_test(self) -> GenTestVector:
+        """Wrong ECDH share size"""
+        input_priv, input_pub = self.wallet.input_key_pair(0)
+        scan_pub = self.wallet.scan_pub
+        spend_pub = self.wallet.spend_pub
+
+        # Create wrong-sized ECDH share (32 bytes instead of 33)
+        ecdh_result = input_priv * scan_pub
+        wrong_ecdh = ecdh_result.to_bytes_compressed()[:32]  # Wrong size!
+
+        psbt = self.create_complete_psbt_base(1, 1)
+
+        prevout_txid = hashlib.sha256("prevout_7".encode()).digest()
+        witness_script = bytes([0x00, 0x14]) + hashlib.sha256(input_pub.bytes).digest()[:20]
+        witness_utxo = create_witness_utxo(100000, witness_script)
+
+        self.add_base_input_fields(psbt, 0, prevout_txid, 0, witness_utxo,
+                                   input_pubkey=input_pub.bytes)
+        psbt.add_input_field(0, PSBTFieldType.PSBT_IN_SIGHASH_TYPE, b'', struct.pack('<I', 0x01))
+
+        # Add wrong-sized ECDH share
+        psbt.add_input_field(0, PSBTFieldType.PSBT_IN_SP_ECDH_SHARE, scan_pub.bytes, wrong_ecdh)
+
+        outpoints = [(prevout_txid, 0)]
+        output_script = compute_bip352_output_script(
+            outpoints=outpoints,
+            summed_pubkey_bytes=input_pub.bytes,
+            ecdh_share_bytes=ecdh_result.to_bytes_compressed(),
+            spend_pubkey_bytes=spend_pub.bytes,
+            k=0
+        )
+
+        psbt.add_output_field(0, PSBTFieldType.PSBT_OUT_AMOUNT, b'', struct.pack('<Q', 95000))
+        psbt.add_output_field(0, PSBTFieldType.PSBT_OUT_SCRIPT, b'', output_script)
+        psbt.add_output_field(0, PSBTFieldType.PSBT_OUT_SP_V0_INFO, b'', scan_pub.bytes + spend_pub.bytes)
+
+        return GenTestVector(
+            description="Wrong ECDH share size",
+            psbt=base64.b64encode(psbt.serialize()).decode(),
+            input_keys=[GenInputKey(
+                input_index=0,
+                private_key=input_priv.hex,
+                public_key=input_pub.hex,
+                prevout_txid=prevout_txid.hex(),
+                prevout_index=0,
+                prevout_scriptpubkey=witness_script.hex(),
+                amount=100000,
+                witness_utxo=witness_utxo.hex()
+            )],
+            scan_keys=[GenScanKey(
+                scan_pubkey=scan_pub.hex,
+                spend_pubkey=spend_pub.hex
+            )],
+            expected_ecdh_shares=[],
+            expected_outputs=[GenOutput(
+                output_index=0,
+                amount=95000,
+                script=output_script.hex(),
+                is_silent_payment=True,
+                sp_info=(scan_pub.bytes + spend_pub.bytes).hex()
+            )],
+            comment="ECDH share must be 33 bytes"
+        )
+
+    def generate_wrong_dleq_size_test(self) -> GenTestVector:
+        """Wrong DLEQ proof size"""
+        input_priv, input_pub = self.wallet.input_key_pair(0)
+        scan_pub = self.wallet.scan_pub
+        spend_pub = self.wallet.spend_pub
+
+        ecdh_result = input_priv * scan_pub
+        wrong_dleq = b'\x00' * 63  # Wrong size (63 bytes instead of 64)
+
+        psbt = self.create_complete_psbt_base(1, 1)
+
+        prevout_txid = hashlib.sha256("prevout_8".encode()).digest()
+        witness_script = bytes([0x00, 0x14]) + hashlib.sha256(input_pub.bytes).digest()[:20]
+        witness_utxo = create_witness_utxo(100000, witness_script)
+
+        self.add_base_input_fields(psbt, 0, prevout_txid, 0, witness_utxo,
+                                   input_pubkey=input_pub.bytes)
+        psbt.add_input_field(0, PSBTFieldType.PSBT_IN_SIGHASH_TYPE, b'', struct.pack('<I', 0x01))
+
+        # Add valid ECDH share but wrong-sized DLEQ proof
+        psbt.add_input_field(0, PSBTFieldType.PSBT_IN_SP_ECDH_SHARE, scan_pub.bytes, ecdh_result.to_bytes_compressed())
+        psbt.add_input_field(0, PSBTFieldType.PSBT_IN_SP_DLEQ, scan_pub.bytes, wrong_dleq)
+
+        outpoints = [(prevout_txid, 0)]
+        output_script = compute_bip352_output_script(
+            outpoints=outpoints,
+            summed_pubkey_bytes=input_pub.bytes,
+            ecdh_share_bytes=ecdh_result.to_bytes_compressed(),
+            spend_pubkey_bytes=spend_pub.bytes,
+            k=0
+        )
+
+        psbt.add_output_field(0, PSBTFieldType.PSBT_OUT_AMOUNT, b'', struct.pack('<Q', 95000))
+        psbt.add_output_field(0, PSBTFieldType.PSBT_OUT_SCRIPT, b'', output_script)
+        psbt.add_output_field(0, PSBTFieldType.PSBT_OUT_SP_V0_INFO, b'', scan_pub.bytes + spend_pub.bytes)
+
+        return GenTestVector(
+            description="Wrong DLEQ proof size",
+            psbt=base64.b64encode(psbt.serialize()).decode(),
+            input_keys=[GenInputKey(
+                input_index=0,
+                private_key=input_priv.hex,
+                public_key=input_pub.hex,
+                prevout_txid=prevout_txid.hex(),
+                prevout_index=0,
+                prevout_scriptpubkey=witness_script.hex(),
+                amount=100000,
+                witness_utxo=witness_utxo.hex()
+            )],
+            scan_keys=[GenScanKey(
+                scan_pubkey=scan_pub.hex,
+                spend_pubkey=spend_pub.hex
+            )],
+            expected_ecdh_shares=[],
+            expected_outputs=[GenOutput(
+                output_index=0,
+                amount=95000,
+                script=output_script.hex(),
+                is_silent_payment=True,
+                sp_info=(scan_pub.bytes + spend_pub.bytes).hex()
+            )],
+            comment="DLEQ proof must be 64 bytes"
+        )
+
+    def generate_label_without_info_test(self) -> GenTestVector:
+        """Label without SP_V0_INFO"""
+        input_priv, input_pub = self.wallet.input_key_pair(0)
+
+        psbt = self.create_complete_psbt_base(1, 1)
+
+        prevout_txid = hashlib.sha256("prevout_9".encode()).digest()
+        witness_script = bytes([0x00, 0x14]) + hashlib.sha256(input_pub.bytes).digest()[:20]
+        witness_utxo = create_witness_utxo(100000, witness_script)
+
+        self.add_base_input_fields(psbt, 0, prevout_txid, 0, witness_utxo,
+                                   input_pubkey=input_pub.bytes)
+
+        # Regular P2TR output script
+        output_script = bytes([0x51, 0x20]) + hashlib.sha256(b"random_output").digest()
+
+        # Add label WITHOUT sp_info (invalid!)
+        psbt.add_output_field(0, PSBTFieldType.PSBT_OUT_AMOUNT, b'', struct.pack('<Q', 95000))
+        psbt.add_output_field(0, PSBTFieldType.PSBT_OUT_SCRIPT, b'', output_script)
+        psbt.add_output_field(0, PSBTFieldType.PSBT_OUT_SP_V0_LABEL, b'', struct.pack('<I', 1))  # Label without info!
+
+        return GenTestVector(
+            description="Label without SP_V0_INFO",
+            psbt=base64.b64encode(psbt.serialize()).decode(),
+            input_keys=[GenInputKey(
+                input_index=0,
+                private_key=input_priv.hex,
+                public_key=input_pub.hex,
+                prevout_txid=prevout_txid.hex(),
+                prevout_index=0,
+                prevout_scriptpubkey=witness_script.hex(),
+                amount=100000,
+                witness_utxo=witness_utxo.hex()
+            )],
+            scan_keys=[],
+            expected_ecdh_shares=[],
+            expected_outputs=[GenOutput(
+                output_index=0,
+                amount=95000,
+                script=output_script.hex(),
+                is_silent_payment=False,
+                sp_info=None
+            )],
+            comment="PSBT_OUT_SP_V0_LABEL requires PSBT_OUT_SP_V0_INFO"
+        )
+
+    def generate_address_mismatch_test(self) -> GenTestVector:
+        """Address mismatch - output script doesn't match computed address"""
+        input_priv, input_pub = self.wallet.input_key_pair(0)
+        scan_pub = self.wallet.scan_pub
+        spend_pub = self.wallet.spend_pub
+
+        ecdh_result = input_priv * scan_pub
+        valid_proof = dleq_generate_proof(input_priv, scan_pub, Wallet.random_bytes())
+
+        psbt = self.create_complete_psbt_base(1, 1)
+
+        prevout_txid = hashlib.sha256("prevout_10".encode()).digest()
+        witness_script = bytes([0x00, 0x14]) + hashlib.sha256(input_pub.bytes).digest()[:20]
+        witness_utxo = create_witness_utxo(100000, witness_script)
+
+        self.add_base_input_fields(psbt, 0, prevout_txid, 0, witness_utxo,
+                                   input_pubkey=input_pub.bytes)
+        psbt.add_input_field(0, PSBTFieldType.PSBT_IN_SIGHASH_TYPE, b'', struct.pack('<I', 0x01))
+
+        # Add valid ECDH share and proof
+        psbt.add_input_field(0, PSBTFieldType.PSBT_IN_SP_ECDH_SHARE, scan_pub.bytes, ecdh_result.to_bytes_compressed())
+        psbt.add_input_field(0, PSBTFieldType.PSBT_IN_SP_DLEQ, scan_pub.bytes, valid_proof)
+
+        # Use WRONG output script (doesn't match BIP-352 computation)
+        wrong_output_script = bytes([0x51, 0x20]) + hashlib.sha256(b"wrong_address").digest()
+
+        psbt.add_output_field(0, PSBTFieldType.PSBT_OUT_AMOUNT, b'', struct.pack('<Q', 95000))
+        psbt.add_output_field(0, PSBTFieldType.PSBT_OUT_SCRIPT, b'', wrong_output_script)
+        psbt.add_output_field(0, PSBTFieldType.PSBT_OUT_SP_V0_INFO, b'', scan_pub.bytes + spend_pub.bytes)
+
+        return GenTestVector(
+            description="Address mismatch",
+            psbt=base64.b64encode(psbt.serialize()).decode(),
+            input_keys=[GenInputKey(
+                input_index=0,
+                private_key=input_priv.hex,
+                public_key=input_pub.hex,
+                prevout_txid=prevout_txid.hex(),
+                prevout_index=0,
+                prevout_scriptpubkey=witness_script.hex(),
+                amount=100000,
+                witness_utxo=witness_utxo.hex()
+            )],
+            scan_keys=[GenScanKey(
+                scan_pubkey=scan_pub.hex,
+                spend_pubkey=spend_pub.hex
+            )],
+            expected_ecdh_shares=[GenECDHShare(
+                scan_key=scan_pub.hex,
+                ecdh_result=ecdh_result.to_bytes_compressed().hex(),
+                dleq_proof=valid_proof.hex(),
+                is_global=False,
+                input_index=0
+            )],
+            expected_outputs=[GenOutput(
+                output_index=0,
+                amount=95000,
+                script=wrong_output_script.hex(),
+                is_silent_payment=True,
+                sp_info=(scan_pub.bytes + spend_pub.bytes).hex()
+            )],
+            comment="Output script doesn't match BIP-352 computed address"
+        )
+
+    def generate_both_global_and_input_ecdh_test(self) -> GenTestVector:
+        """Both global and per-input ECDH shares present"""
+        input_priv, input_pub = self.wallet.input_key_pair(0)
+        scan_pub = self.wallet.scan_pub
+        spend_pub = self.wallet.spend_pub
+
+        ecdh_result = input_priv * scan_pub
+        valid_proof = dleq_generate_proof(input_priv, scan_pub, Wallet.random_bytes())
+
+        psbt = self.create_complete_psbt_base(1, 1)
+
+        prevout_txid = hashlib.sha256("prevout_11".encode()).digest()
+        witness_script = bytes([0x00, 0x14]) + hashlib.sha256(input_pub.bytes).digest()[:20]
+        witness_utxo = create_witness_utxo(100000, witness_script)
+
+        self.add_base_input_fields(psbt, 0, prevout_txid, 0, witness_utxo,
+                                   input_pubkey=input_pub.bytes)
+        psbt.add_input_field(0, PSBTFieldType.PSBT_IN_SIGHASH_TYPE, b'', struct.pack('<I', 0x01))
+
+        # Add BOTH global AND per-input ECDH shares (conflicting!)
+        psbt.add_global_field(PSBTFieldType.PSBT_GLOBAL_SP_ECDH_SHARE, scan_pub.bytes, ecdh_result.to_bytes_compressed())
+        psbt.add_global_field(PSBTFieldType.PSBT_GLOBAL_SP_DLEQ, scan_pub.bytes, valid_proof)
+        psbt.add_input_field(0, PSBTFieldType.PSBT_IN_SP_ECDH_SHARE, scan_pub.bytes, ecdh_result.to_bytes_compressed())
+        psbt.add_input_field(0, PSBTFieldType.PSBT_IN_SP_DLEQ, scan_pub.bytes, valid_proof)
+
+        outpoints = [(prevout_txid, 0)]
+        output_script = compute_bip352_output_script(
+            outpoints=outpoints,
+            summed_pubkey_bytes=input_pub.bytes,
+            ecdh_share_bytes=ecdh_result.to_bytes_compressed(),
+            spend_pubkey_bytes=spend_pub.bytes,
+            k=0
+        )
+
+        psbt.add_output_field(0, PSBTFieldType.PSBT_OUT_AMOUNT, b'', struct.pack('<Q', 95000))
+        psbt.add_output_field(0, PSBTFieldType.PSBT_OUT_SCRIPT, b'', output_script)
+        psbt.add_output_field(0, PSBTFieldType.PSBT_OUT_SP_V0_INFO, b'', scan_pub.bytes + spend_pub.bytes)
+
+        return GenTestVector(
+            description="Both global and per-input ECDH shares",
+            psbt=base64.b64encode(psbt.serialize()).decode(),
+            input_keys=[GenInputKey(
+                input_index=0,
+                private_key=input_priv.hex,
+                public_key=input_pub.hex,
+                prevout_txid=prevout_txid.hex(),
+                prevout_index=0,
+                prevout_scriptpubkey=witness_script.hex(),
+                amount=100000,
+                witness_utxo=witness_utxo.hex()
+            )],
+            scan_keys=[GenScanKey(
+                scan_pubkey=scan_pub.hex,
+                spend_pubkey=spend_pub.hex
+            )],
+            expected_ecdh_shares=[GenECDHShare(
+                scan_key=scan_pub.hex,
+                ecdh_result=ecdh_result.to_bytes_compressed().hex(),
+                dleq_proof=valid_proof.hex(),
+                is_global=True,
+                input_index=None
+            )],
+            expected_outputs=[GenOutput(
+                output_index=0,
+                amount=95000,
+                script=output_script.hex(),
+                is_silent_payment=True,
+                sp_info=(scan_pub.bytes + spend_pub.bytes).hex()
+            )],
+            comment="Cannot have both global and per-input ECDH shares for same scan key"
+        )
+
     # Valid Test Case Generators
     
     def generate_single_signer_global_test(self) -> GenTestVector:
@@ -625,9 +1099,18 @@ class TestVectorGenerator:
                                    input_pubkey=input_pub.bytes)
         psbt.add_input_field(0, PSBTFieldType.PSBT_IN_SIGHASH_TYPE, b'', struct.pack('<I', 0x01))  # SIGHASH_ALL
 
+        # Compute proper BIP-352 output script
+        outpoints = [(prevout_txid, 0)]
+        output_script = compute_bip352_output_script(
+            outpoints=outpoints,
+            summed_pubkey_bytes=input_pub.bytes,
+            ecdh_share_bytes=ecdh_result.to_bytes_compressed(),
+            spend_pubkey_bytes=spend_pub.bytes,
+            k=0
+        )
+
         # Add silent payment output with computed script
         psbt.add_output_field(0, PSBTFieldType.PSBT_OUT_AMOUNT, b'', struct.pack('<Q', 95000))
-        output_script = bytes([0x51, 0x20]) + hashlib.sha256(b"computed_silent_payment_script").digest()
         psbt.add_output_field(0, PSBTFieldType.PSBT_OUT_SCRIPT, b'', output_script)
         sp_info = scan_pub.bytes + spend_pub.bytes
         psbt.add_output_field(0, PSBTFieldType.PSBT_OUT_SP_V0_INFO, b'', sp_info)
@@ -667,23 +1150,26 @@ class TestVectorGenerator:
     
     def generate_multi_party_per_input_test(self) -> GenTestVector:
         """Multi-party with per-input ECDH shares"""
+        from secp256k1_374 import GE
+
         # Use local wallet keys
         input1_priv, input1_pub = self.wallet.input_key_pair(0)
         scan_pub = self.wallet.scan_pub
         spend_pub = self.wallet.spend_pub
         # Two different inputs with different signers
         input2_priv, input2_pub = self.wallet.input_key_pair(1)
-        
+
         # Compute ECDH shares for both inputs
         ecdh_result1 = input1_priv * scan_pub
         ecdh_result2 = input2_priv * scan_pub
-        
+
         # Generate valid proofs for both
         valid_proof1 = dleq_generate_proof(input1_priv, scan_pub, Wallet.random_bytes())
         valid_proof2 = dleq_generate_proof(input2_priv, scan_pub, Wallet.random_bytes())
-        
+
         psbt = self.create_complete_psbt_base(2, 1)
-        
+
+        prevout_txids = []
         # Add per-input ECDH shares and proofs
         for i, (ecdh_result, valid_proof, input_pub, prevout_name) in enumerate([
             (ecdh_result1, valid_proof1, input1_pub, "prevout_11"),
@@ -691,6 +1177,7 @@ class TestVectorGenerator:
         ]):
             # Add complete input fields
             prevout_txid = hashlib.sha256(prevout_name.encode()).digest()
+            prevout_txids.append((prevout_txid, 0))
             witness_script = bytes([0x00, 0x14]) + hashlib.sha256(input_pub.bytes).digest()[:20]
             witness_utxo = create_witness_utxo(50000, witness_script)
 
@@ -701,10 +1188,22 @@ class TestVectorGenerator:
             # Add per-input ECDH share and DLEQ proof
             psbt.add_input_field(i, PSBTFieldType.PSBT_IN_SP_ECDH_SHARE, scan_pub.bytes, ecdh_result.to_bytes_compressed())
             psbt.add_input_field(i, PSBTFieldType.PSBT_IN_SP_DLEQ, scan_pub.bytes, valid_proof)
-        
+
+        # Sum the ECDH shares and public keys for output computation
+        summed_ecdh = ecdh_result1 + ecdh_result2
+        summed_pubkey = input1_pub + input2_pub
+
+        # Compute proper BIP-352 output script
+        output_script = compute_bip352_output_script(
+            outpoints=prevout_txids,
+            summed_pubkey_bytes=summed_pubkey.to_bytes_compressed(),
+            ecdh_share_bytes=summed_ecdh.to_bytes_compressed(),
+            spend_pubkey_bytes=spend_pub.bytes,
+            k=0
+        )
+
         # Add silent payment output
         psbt.add_output_field(0, PSBTFieldType.PSBT_OUT_AMOUNT, b'', struct.pack('<Q', 95000))
-        output_script = bytes([0x51, 0x20]) + hashlib.sha256(b"multi_party_silent_payment").digest()
         psbt.add_output_field(0, PSBTFieldType.PSBT_OUT_SCRIPT, b'', output_script)
         sp_info = scan_pub.bytes + spend_pub.bytes
         psbt.add_output_field(0, PSBTFieldType.PSBT_OUT_SP_V0_INFO, b'', sp_info)
@@ -766,15 +1265,18 @@ class TestVectorGenerator:
     
     def generate_silent_payment_with_change_test(self) -> GenTestVector:
         """Silent payment with change detection"""
+        from secp256k1_374 import GE, G
+
         # Use local wallet keys
         input_priv, input_pub = self.wallet.input_key_pair(0)
         scan_pub = self.wallet.scan_pub
+        scan_priv = self.wallet.scan_priv
         spend_pub = self.wallet.spend_pub
-        
+
         # Compute ECDH share with valid proof
         ecdh_result = input_priv * scan_pub
         valid_proof = dleq_generate_proof(input_priv, scan_pub, Wallet.random_bytes())
-        
+
         psbt = self.create_complete_psbt_base(1, 2)  # 1 input, 2 outputs
 
         # Add complete input fields
@@ -786,15 +1288,32 @@ class TestVectorGenerator:
                                    input_pubkey=input_pub.bytes)
         psbt.add_input_field(0, PSBTFieldType.PSBT_IN_SIGHASH_TYPE, b'', struct.pack('<I', 0x01))  # SIGHASH_ALL
 
-        # Add global ECDH share and DLEQ proof
-        psbt.add_global_field(PSBTFieldType.PSBT_GLOBAL_SP_ECDH_SHARE, scan_pub.bytes, ecdh_result.to_bytes_compressed())
-        psbt.add_global_field(PSBTFieldType.PSBT_GLOBAL_SP_DLEQ, scan_pub.bytes, valid_proof)
+        # Add per-input ECDH share and DLEQ proof (not global for this test)
+        psbt.add_input_field(0, PSBTFieldType.PSBT_IN_SP_ECDH_SHARE, scan_pub.bytes, ecdh_result.to_bytes_compressed())
+        psbt.add_input_field(0, PSBTFieldType.PSBT_IN_SP_DLEQ, scan_pub.bytes, valid_proof)
+
+        # Apply label to spend key: B_m = B_spend + hash_BIP0352/Label(b_scan || m) * G
+        label = 1
+        tag_data = b"BIP0352/Label"
+        tag_hash = hashlib.sha256(tag_data).digest()
+        label_preimage = tag_hash + tag_hash + scan_priv.to_bytes(32, 'big') + struct.pack('<I', label)
+        label_tweak = int.from_bytes(hashlib.sha256(label_preimage).digest(), 'big')
+        labeled_spend_key = spend_pub + (label_tweak * G)
+
+        # Compute proper BIP-352 output script with labeled spend key
+        outpoints = [(prevout_txid, 0)]
+        sp_output_script = compute_bip352_output_script(
+            outpoints=outpoints,
+            summed_pubkey_bytes=input_pub.bytes,
+            ecdh_share_bytes=ecdh_result.to_bytes_compressed(),
+            spend_pubkey_bytes=labeled_spend_key.to_bytes_compressed(),
+            k=0
+        )
+        label_value = struct.pack('<I', label)
 
         # Add silent payment output with label
-        sp_info = scan_pub.bytes + spend_pub.bytes
-        sp_output_script = bytes([0x51, 0x20]) + hashlib.sha256(b"silent_payment_with_change").digest()
-        label_value = struct.pack('<I', 1)  # Label = 1
-        
+        # sp_info contains the labeled spend key (what the sender received in the address)
+        sp_info = scan_pub.bytes + labeled_spend_key.to_bytes_compressed()
         psbt.add_output_field(0, PSBTFieldType.PSBT_OUT_AMOUNT, b'', struct.pack('<Q', 50000))
         psbt.add_output_field(0, PSBTFieldType.PSBT_OUT_SCRIPT, b'', sp_output_script)
         psbt.add_output_field(0, PSBTFieldType.PSBT_OUT_SP_V0_INFO, b'', sp_info)
@@ -802,11 +1321,13 @@ class TestVectorGenerator:
         
         # Add change output with BIP32 derivation
         change_script = bytes([0x00, 0x14]) + hashlib.sha256(b"change_script").digest()[:20]  # P2WPKH
-        bip32_derivation = input_pub.bytes + b'\x04' + struct.pack('>I', 0) + struct.pack('>I', 1)  # m/0/1
-        
+        master_fingerprint = struct.pack('>I', 0)  # 4-byte fingerprint
+        derivation_path = struct.pack('>I', 0) + struct.pack('>I', 1)  # m/0/1
+        bip32_derivation_value = master_fingerprint + derivation_path
+
         psbt.add_output_field(1, PSBTFieldType.PSBT_OUT_AMOUNT, b'', struct.pack('<Q', 45000))  # Change
         psbt.add_output_field(1, PSBTFieldType.PSBT_OUT_SCRIPT, b'', change_script)
-        psbt.add_output_field(1, PSBTFieldType.PSBT_OUT_BIP32_DERIVATION, input_pub.bytes, bip32_derivation[33:])  # Key as key, derivation as value
+        psbt.add_output_field(1, PSBTFieldType.PSBT_OUT_BIP32_DERIVATION, input_pub.bytes, bip32_derivation_value)
         
         return GenTestVector(
             description="Silent payment with change detection",
@@ -858,11 +1379,11 @@ class TestVectorGenerator:
         input_priv, input_pub = self.wallet.input_key_pair(0)
         scan_pub = self.wallet.scan_pub
         spend_pub = self.wallet.spend_pub
-        
+
         # Compute ECDH share with valid proof
         ecdh_result = input_priv * scan_pub
         valid_proof = dleq_generate_proof(input_priv, scan_pub, Wallet.random_bytes())
-        
+
         psbt = self.create_complete_psbt_base(1, 2)  # 1 input, 2 outputs
 
         # Add complete input fields
@@ -877,18 +1398,31 @@ class TestVectorGenerator:
         # Add global ECDH share and DLEQ proof
         psbt.add_global_field(PSBTFieldType.PSBT_GLOBAL_SP_ECDH_SHARE, scan_pub.bytes, ecdh_result.to_bytes_compressed())
         psbt.add_global_field(PSBTFieldType.PSBT_GLOBAL_SP_DLEQ, scan_pub.bytes, valid_proof)
-        
+
+        # Compute proper BIP-352 output scripts with k=0 and k=1
+        outpoints = [(prevout_txid, 0)]
+        sp1_output_script = compute_bip352_output_script(
+            outpoints=outpoints,
+            summed_pubkey_bytes=input_pub.bytes,
+            ecdh_share_bytes=ecdh_result.to_bytes_compressed(),
+            spend_pubkey_bytes=spend_pub.bytes,
+            k=0
+        )
+        sp2_output_script = compute_bip352_output_script(
+            outpoints=outpoints,
+            summed_pubkey_bytes=input_pub.bytes,
+            ecdh_share_bytes=ecdh_result.to_bytes_compressed(),
+            spend_pubkey_bytes=spend_pub.bytes,
+            k=1
+        )
+
         # Add first silent payment output
         sp_info = scan_pub.bytes + spend_pub.bytes
-        sp1_output_script = bytes([0x51, 0x20]) + hashlib.sha256(b"silent_payment_output_1").digest()
-        
         psbt.add_output_field(0, PSBTFieldType.PSBT_OUT_AMOUNT, b'', struct.pack('<Q', 40000))
         psbt.add_output_field(0, PSBTFieldType.PSBT_OUT_SCRIPT, b'', sp1_output_script)
         psbt.add_output_field(0, PSBTFieldType.PSBT_OUT_SP_V0_INFO, b'', sp_info)
-        
+
         # Add second silent payment output to same scan key (different k value)
-        sp2_output_script = bytes([0x51, 0x20]) + hashlib.sha256(b"silent_payment_output_2").digest()
-        
         psbt.add_output_field(1, PSBTFieldType.PSBT_OUT_AMOUNT, b'', struct.pack('<Q', 55000))
         psbt.add_output_field(1, PSBTFieldType.PSBT_OUT_SCRIPT, b'', sp2_output_script)
         psbt.add_output_field(1, PSBTFieldType.PSBT_OUT_SP_V0_INFO, b'', sp_info)
@@ -947,7 +1481,13 @@ class TestVectorGenerator:
             asdict(self.generate_mixed_segwit_test()),
             asdict(self.generate_no_ecdh_shares_test()),
             asdict(self.generate_missing_global_dleq_test()),
-            asdict(self.generate_wrong_sp_info_size_test())
+            asdict(self.generate_wrong_sp_info_size_test()),
+            asdict(self.generate_mixed_input_types_test()),
+            asdict(self.generate_wrong_ecdh_share_size_test()),
+            asdict(self.generate_wrong_dleq_size_test()),
+            asdict(self.generate_label_without_info_test()),
+            asdict(self.generate_address_mismatch_test()),
+            asdict(self.generate_both_global_and_input_ecdh_test())
         ]
         
         # Valid cases  

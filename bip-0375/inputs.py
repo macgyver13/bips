@@ -89,6 +89,7 @@ def validate_input_eligibility(
 # Silent Payments Utilities
 # =====================================================
 
+
 def is_p2tr(spk: bytes) -> bool:
     if len(spk) != 34:
         return False

@@ -52,6 +52,7 @@ def extract_dleq_components(
 
 def get_pubkey_from_input(input_fields: Dict[int, bytes]) -> Optional[GE]:
     """Extract public key from PSBT input fields"""
+
     # Try BIP32 derivation field (highest priority, BIP-174 standard)
     if PSBTFieldType.PSBT_IN_BIP32_DERIVATION in input_fields:
         derivation_data = input_fields[PSBTFieldType.PSBT_IN_BIP32_DERIVATION]
@@ -66,7 +67,6 @@ def get_pubkey_from_input(input_fields: Dict[int, bytes]) -> Optional[GE]:
 def validate_global_dleq_proof(
     global_fields: Dict[int, bytes],
     input_maps: List[Dict[int, bytes]] = None,
-    input_keys: List[Dict] = None,
 ) -> bool:
     """Validate global DLEQ proof using BIP 374 implementation"""
 
@@ -108,11 +108,7 @@ def validate_global_dleq_proof(
     return dleq_verify_proof(A_combined, B, C, proof)
 
 
-def validate_input_dleq_proof(
-    input_fields: Dict[int, bytes],
-    input_keys: List[Dict] = None,
-    input_index: int = None,
-) -> bool:
+def validate_input_dleq_proof(input_fields: Dict[int, bytes]) -> bool:
     """Validate input DLEQ proof using BIP 374 implementation"""
 
     if PSBTFieldType.PSBT_IN_SP_DLEQ not in input_fields:

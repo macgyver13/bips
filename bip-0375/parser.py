@@ -36,15 +36,17 @@ def parse_psbt_structure(
         fields = {}
 
         while offset < len(data):
-            # Read key length
+            # Validate and extract key type
             key_len, offset = parse_compact_size_uint(data, offset)
             if key_len == 0:  # End of section
                 break
 
-            # Read key data
             if offset + key_len > len(data):
                 raise ValueError("Truncated key data")
-            key_data = data[offset : offset + key_len]
+
+            # Destructure into key_type and key_data
+            key_type, *key_data_list = data[offset : offset + key_len]
+            key_data = bytes(key_data_list)
             offset += key_len
 
             # Read value length
@@ -56,24 +58,19 @@ def parse_psbt_structure(
             value_data = data[offset : offset + value_len]
             offset += value_len
 
-            # Extract field type and handle key-value pairs
-            if key_data:
-                field_type = key_data[0]
-                key_content = key_data[1:] if len(key_data) > 1 else b""
-
-                # For BIP 375 and BIP-174 key-value fields, store both key and value
-                if field_type in [
-                    PSBTFieldType.PSBT_GLOBAL_SP_ECDH_SHARE,
-                    PSBTFieldType.PSBT_GLOBAL_SP_DLEQ,
-                    PSBTFieldType.PSBT_IN_SP_ECDH_SHARE,
-                    PSBTFieldType.PSBT_IN_SP_DLEQ,
-                    PSBTFieldType.PSBT_IN_BIP32_DERIVATION,
-                    PSBTFieldType.PSBT_IN_PARTIAL_SIG,
-                ]:
-                    fields[field_type] = {"key": key_content, "value": value_data}
-                else:
-                    # For standard PSBT fields, just store value
-                    fields[field_type] = value_data
+            # For BIP 375 and BIP-174 fields, store both key and value
+            if key_type in [
+                PSBTFieldType.PSBT_GLOBAL_SP_ECDH_SHARE,
+                PSBTFieldType.PSBT_GLOBAL_SP_DLEQ,
+                PSBTFieldType.PSBT_IN_SP_ECDH_SHARE,
+                PSBTFieldType.PSBT_IN_SP_DLEQ,
+                PSBTFieldType.PSBT_IN_BIP32_DERIVATION,
+                PSBTFieldType.PSBT_IN_PARTIAL_SIG,
+            ]:
+                fields[key_type] = {"key": key_data, "value": value_data}
+            else:
+                # For standard PSBT fields, just store value
+                fields[key_type] = value_data
 
         return fields, offset
 

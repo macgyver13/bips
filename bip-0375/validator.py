@@ -28,10 +28,6 @@ def validate_bip375_psbt(
         input_keys: Optional list of input key material for BIP-352 validation
     """
 
-    # Basic PSBT structure validation
-    if len(psbt_data) < 5 or psbt_data[:5] != b"psbt\xff":
-        return False, "Invalid PSBT magic"
-
     # Parse PSBT fields
     global_fields, input_maps, output_maps = parse_psbt_structure(psbt_data)
 
@@ -122,7 +118,7 @@ def validate_bip375_psbt(
     if has_input_ecdh:
         for i, input_fields in enumerate(input_maps):
             if PSBTFieldType.PSBT_IN_SP_ECDH_SHARE in input_fields:
-                if not validate_input_dleq_proof(input_fields, None, i):
+                if not validate_input_dleq_proof(input_fields):
                     return False, f"Input {i} DLEQ proof verification failed"
 
     # Segwit version restrictions
@@ -132,12 +128,14 @@ def validate_bip375_psbt(
             if check_invalid_segwit_version(witness_utxo):
                 return False, f"Input {i} uses segwit version > 1 with silent payments"
 
-    # Eligible input type requirement
-    # When silent payment outputs exist, ALL inputs must be eligible types
+    # Require at least 1 silent payments eligible input
+    has_eligible_input = False
     for i, input_fields in enumerate(input_maps):
-        is_valid, error_msg = validate_input_eligibility(input_fields, i)
-        if not is_valid:
-            return False, error_msg
+        has_eligible_input, error_msg = validate_input_eligibility(input_fields, i)
+        if has_eligible_input:
+            break
+    if not has_eligible_input:
+        return False, "No eligible input types found for silent payments"
 
     # SIGHASH_ALL requirement
     for i, input_fields in enumerate(input_maps):
@@ -190,9 +188,6 @@ def validate_bip352_outputs(
             continue
 
         sp_info = output_fields[PSBTFieldType.PSBT_OUT_SP_V0_INFO]
-        if len(sp_info) != 66:
-            continue
-
         scan_pubkey_bytes = sp_info[:33]
         spend_pubkey_bytes = sp_info[33:]
 

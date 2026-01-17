@@ -5,7 +5,6 @@ BIP 375: PSBT Validator
 Complete BIP 375 validation for PSBTs with silent payment outputs.
 """
 
-import hashlib
 import struct
 from typing import Tuple, List, Dict, Optional
 
@@ -13,8 +12,9 @@ from constants import PSBTFieldType
 from dleq import validate_global_dleq_proof, validate_input_dleq_proof
 from inputs import validate_input_eligibility, check_invalid_segwit_version
 from parser import parse_psbt_structure
-# External references bip-0374
-from secp256k1 import GE, G
+from secp256k1lab.secp256k1 import GE, G
+from secp256k1lab.ecdh import ecdh_compressed_in_raw_out
+from secp256k1lab.util import int_from_bytes, tagged_hash
 
 
 def validate_bip375_psbt(
@@ -245,10 +245,14 @@ def validate_bip352_outputs(
 
                         # Add this input's public key to the sum
                         if input_idx < len(input_keys):
-                            pubkey_bytes = bytes.fromhex(input_keys[input_idx]["public_key"])
+                            pubkey_bytes = bytes.fromhex(
+                                input_keys[input_idx]["public_key"]
+                            )
                             pubkey = GE.from_bytes(pubkey_bytes)
                             summed_pubkey = (
-                                pubkey if summed_pubkey is None else summed_pubkey + pubkey
+                                pubkey
+                                if summed_pubkey is None
+                                else summed_pubkey + pubkey
                             )
 
             if summed_ecdh_share and summed_pubkey:
@@ -293,28 +297,24 @@ def compute_bip352_output_script(
     smallest_outpoint = min(serialized_outpoints)
 
     # Compute input_hash = hash_BIP0352/Inputs(smallest_outpoint || A)
-    tag_data = b"BIP0352/Inputs"
-    tag_hash = hashlib.sha256(tag_data).digest()
-    input_hash_preimage = tag_hash + tag_hash + smallest_outpoint + summed_pubkey_bytes
-    input_hash_bytes = hashlib.sha256(input_hash_preimage).digest()
-    input_hash = int.from_bytes(input_hash_bytes, "big")
+    input_hash_bytes = tagged_hash(
+        "BIP0352/Inputs", smallest_outpoint + summed_pubkey_bytes
+    )
 
     # Compute shared_secret = input_hash * ecdh_share
-    ecdh_point = GE.from_bytes(ecdh_share_bytes)
-    shared_secret_point = input_hash * ecdh_point
-    shared_secret_bytes = shared_secret_point.to_bytes_compressed()
+    shared_secret_bytes = ecdh_compressed_in_raw_out(
+        input_hash_bytes, ecdh_share_bytes
+    ).to_bytes_compressed()
 
     # Compute t_k = hash_BIP0352/SharedSecret(shared_secret || k)
-    tag_data = b"BIP0352/SharedSecret"
-    tag_hash = hashlib.sha256(tag_data).digest()
-    t_preimage = tag_hash + tag_hash + shared_secret_bytes + k.to_bytes(4, "big")
-    t_k_bytes = hashlib.sha256(t_preimage).digest()
-    t_k = int.from_bytes(t_k_bytes, "big")
+    t_k_bytes = tagged_hash(
+        "BIP0352/SharedSecret", shared_secret_bytes + k.to_bytes(4, "big")
+    )
+    t_k = int_from_bytes(t_k_bytes)
 
     # Compute P_k = B_spend + t_k * G
     B_spend = GE.from_bytes(spend_pubkey_bytes)
     P_k = B_spend + (t_k * G)
 
     # Create P2TR script (x-only pubkey)
-    x_only = P_k.to_bytes_compressed()[1:]  # Remove parity byte
-    return bytes([0x51, 0x20]) + x_only
+    return bytes([0x51, 0x20]) + P_k.to_bytes_xonly()

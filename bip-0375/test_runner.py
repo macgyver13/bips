@@ -8,14 +8,17 @@ Validates BIP 375 PSBT test vectors.
 import argparse
 import base64
 import json
-import os
+from pathlib import Path
 import sys
 
-# Add sibling directory bip-374 to path before to make secp256k1 and dleq reference available
-current_dir = os.path.dirname(os.path.abspath(__file__))
-sibling_dir_path = os.path.join(current_dir, '..', 'bip-0374')
+# Add sibling directory bip-374 to path to make dleq(reference.py) available in other modules
+sibling_dir_path = str(Path(__file__).parent / "../bip-0374")
 if sibling_dir_path not in sys.path:
     sys.path.append(sibling_dir_path)
+# Make the vendored copy of secp256k1lab available in other modules
+secp256k1lab_dir_path = str(Path(__file__).parent / "secp256k1lab/src")
+if secp256k1lab_dir_path not in sys.path:
+    sys.path.append(secp256k1lab_dir_path)
 from validator import validate_bip375_psbt
 
 

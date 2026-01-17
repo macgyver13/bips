@@ -11,8 +11,10 @@ This directory contains reference implementation for BIP 375: Sending Silent Pay
 - **`test_runner.py`** - Test infrastructure (executable)
 
 ## Dependencies
-- **`../bip-0374/reference.py`** - BIP 374 DLEQ proof reference
-- **`../bip-0374/secp256k1.py`** - secp256k1 implementation
+- **`../bip-0374/reference.py`** - BIP 374 DLEQ proof verification functions
+- **`bip-0375/secp256k1lab/`** - Vendored secp256k1 reference implementation
+  - Version: 1.0.0 (commit [44dc4bd](https://github.com/secp256k1lab/secp256k1lab/commit/44dc4bd893b8f03e621585e3bf255253e0e0fbfb))
+  - Source: [secp256k1lab/secp256k1lab](https://github.com/secp256k1lab/secp256k1lab/)
 
 ## Testing
 

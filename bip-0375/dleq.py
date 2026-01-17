@@ -8,9 +8,10 @@ Functions for validating DLEQ proofs on ECDH shares in PSBTs.
 from typing import Dict, List, Optional, Tuple
 
 from constants import PSBTFieldType
-# External references bip-0374
+from secp256k1lab.secp256k1 import GE
+
+# External reference to bip-0374
 from reference import dleq_verify_proof
-from secp256k1 import GE
 
 
 def extract_dleq_components(

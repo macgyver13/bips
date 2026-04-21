@@ -73,12 +73,11 @@ def load_test_vectors(filename: str) -> dict:
         sys.exit(1)
 
 
-def run_validation_tests(test_data: dict, verbosity: int = 0) -> tuple[int, int]:
-    """Run validation checks for each test vector"""
+def run_invalid_tests(test_data: dict, verbosity: int = 0) -> tuple[int, int]:
+    """Run the `invalid` section (each PSBT should fail validation)"""
     passed = 0
     failed = 0
 
-    # Process invalid PSBTs (should fail validation)
     invalid_tests = test_data.get("invalid", [])
     print(f"Invalid PSBTs: {len(invalid_tests)}")
     for test_vector in invalid_tests:
@@ -95,9 +94,15 @@ def run_validation_tests(test_data: dict, verbosity: int = 0) -> tuple[int, int]
             if result:
                 print(f"  ERROR: {result}")
 
-    # Process valid PSBTs (should pass validation)
+    return passed, failed
+
+
+def run_valid_tests(test_data: dict, verbosity: int = 0) -> tuple[int, int]:
+    """Run the `valid` section (each PSBT should pass validation)"""
+    passed = 0
+    failed = 0
+
     valid_tests = test_data.get("valid", [])
-    print("")
     print(f"Valid PSBTs: {len(valid_tests)}")
     for test_vector in valid_tests:
         is_valid, result = validate_bip375_psbt(
@@ -134,8 +139,26 @@ def main():
         default=0,
         help="Verbosity level: -v shows pass/fail details, -vv enables debug output",
     )
+    parser.add_argument(
+        "--valid",
+        action="store_true",
+        help="Run the valid PSBT section",
+    )
+    parser.add_argument(
+        "--invalid",
+        action="store_true",
+        help="Run the invalid PSBT section",
+    )
+    parser.add_argument(
+        "--workflow",
+        action="store_true",
+        help="Run the role-based workflow section",
+    )
 
     args = parser.parse_args()
+
+    # No section flag selects everything.
+    run_all = not (args.valid or args.invalid or args.workflow)
 
     test_data = load_test_vectors(args.test_file)
 
@@ -143,9 +166,32 @@ def main():
     print(f"Version: {test_data.get('version', 'N/A')}")
     print()
 
-    passed, failed = run_validation_tests(test_data, args.verbosity)
+    passed = 0
+    failed = 0
 
-    print()
+    if run_all or args.invalid:
+        p, f = run_invalid_tests(test_data, args.verbosity)
+        passed += p
+        failed += f
+        print()
+
+    if run_all or args.valid:
+        p, f = run_valid_tests(test_data, args.verbosity)
+        passed += p
+        failed += f
+        print()
+
+    if run_all or args.workflow:
+        # Imported here to keep the module-level import direction one-way:
+        # workflow_tests imports validate_bip375_psbt from this module.
+        from workflow_tests import run_workflow_tests
+
+        print("=== Workflow Tests ===")
+        p, f = run_workflow_tests(test_data, verbose=args.verbosity >= 1)
+        passed += p
+        failed += f
+        print()
+
     print(f"Summary: {passed} passed, {failed} failed")
 
     sys.exit(0 if failed == 0 else 1)

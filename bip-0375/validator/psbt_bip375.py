@@ -36,6 +36,12 @@ class BIP375PSBTMap(PSBTMap):
     def __getitem__(self, key):
         return self.map[key]
 
+    def __setitem__(self, key, value):
+        self.map[key] = value
+
+    def __delitem__(self, key):
+        del self.map[key]
+
     def __contains__(self, key):
         return key in self.map
 
@@ -63,9 +69,23 @@ class BIP375PSBTMap(PSBTMap):
             return self.map.get(key_type)
         return self.map.get(bytes([key_type]) + key_data)
 
+    def set_by_key(self, key_type: int, key_data: bytes, value: bytes) -> None:
+        """Set value_data for a specific key_type + key_data combination"""
+        if key_data == b"":
+            self.map[key_type] = value
+        else:
+            self.map[bytes([key_type]) + key_data] = value
+
 
 class BIP375PSBT(PSBT):
     """PSBT that deserializes maps as BIP375PSBTMap instances"""
+
+    def __init__(self, *, g=None, i=None, o=None):
+        super().__init__(
+            g=g if g is not None else BIP375PSBTMap(),
+            i=i,
+            o=o,
+        )
 
     def deserialize(self, f):
         assert f.read(5) == b"psbt\xff"

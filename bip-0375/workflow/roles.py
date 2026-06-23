@@ -11,7 +11,7 @@ This module provides reference functions for each role in the PSBT workflow.
 import secrets
 from io import BytesIO
 from enum import Enum
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from bitcoin_test.psbt import (
     PSBT_GLOBAL_VERSION,
@@ -220,8 +220,7 @@ def update_sp_psbt(
     input_utxos: List[Dict],
     input_derivations: List[Dict] = None,
     output_derivations: List[Dict] = None,
-    input_private_keys: List[int] = None,
-    use_global_ecdh: bool = True,
+    input_private_keys: List[Optional[int]] = None,
 ) -> PSBT:
     """
     Updater role: Add UTXO info, BIP32 derivations, and ECDH shares.
@@ -242,14 +241,18 @@ def update_sp_psbt(
             - spend_pubkey: bytes
             - spend_fingerprint: bytes
             - spend_path: List[int]
-        input_private_keys: List of private keys (int) per input for ECDH
-        use_global_ecdh: If True, use global ECDH share; if False, per-input
+        input_private_keys: List of private keys (int) per input for ECDH,
+            aligned positionally with psbt.i; use None for inputs whose key
+            this caller does not hold. Holding the key for every input produces
+            a global ECDH share; holding only some produces per-input shares.
 
     Returns:
         PSBT with UTXO info, derivations, and optionally ECDH shares
     """
-    if detect_psbt_step(psbt) != PSBTState.CONSTRUCTED:
-        raise InvalidStateTransitionError("PSBT must be in 'constructed' state (has inputs/outputs, no ECDH) to update")
+    # Allow re-entry from UPDATED so multiple parties can each add their
+    # per-input shares across successive update calls (multi-party).
+    if detect_psbt_step(psbt) not in (PSBTState.CONSTRUCTED, PSBTState.UPDATED):
+        raise InvalidStateTransitionError("PSBT must be in 'constructed' or 'updated' state to update")
 
     if input_derivations is None:
         input_derivations = [None] * len(psbt.i)
@@ -311,17 +314,23 @@ def update_sp_psbt(
                 sp_info = output_map[PSBT_OUT_SP_V0_INFO]
                 scan_keys.add(sp_info[:33])
 
-        if use_global_ecdh:
+        # BIP-375: create a global share only when this caller holds the private
+        # keys for every input. Holding only some keys yields per-input shares,
+        # which combine across successive updates (the multi-party case).
+        held = [pk for pk in input_private_keys if pk is not None]
+        if len(held) == len(psbt.i):
             # Sum all private keys for global ECDH
-            a_sum = sum(input_private_keys) % GE.ORDER
+            a_sum = sum(held) % GE.ORDER
 
             for scan_key in scan_keys:
                 ecdh_share, proof = _create_ecdh_share_and_proof(a_sum, scan_key)
                 psbt.g.set_by_key(PSBT_GLOBAL_SP_ECDH_SHARE, scan_key, ecdh_share)
                 psbt.g.set_by_key(PSBT_GLOBAL_SP_DLEQ, scan_key, proof)
         else:
-            # Per-input ECDH shares
-            for i, (input_map, privkey) in enumerate(zip(psbt.i, input_private_keys)):
+            # Per-input ECDH shares for the inputs whose key is held
+            for input_map, privkey in zip(psbt.i, input_private_keys):
+                if privkey is None:
+                    continue
                 for scan_key in scan_keys:
                     ecdh_share, proof = _create_ecdh_share_and_proof(privkey, scan_key)
                     input_map.set_by_key(PSBT_IN_SP_ECDH_SHARE, scan_key, ecdh_share)

@@ -45,7 +45,7 @@ from deps.bitcoin_test.signing import ECPubKey
 from deps.bitcoin_test.sighash import SegwitV0SignatureHash, make_p2wpkh_script_code, SIGHASH_ALL
 from deps.bitcoin_test.transaction import CTxOut
 from deps.bitcoin_test.utils import is_p2wpkh, from_binary
-from workflow.roles import _build_transaction_from_psbt
+from workflow.roles import _build_transaction_from_psbt, unique_identifier
 from test_runner import validate_bip375_psbt
 
 
@@ -300,6 +300,22 @@ def _compare_signed_step(got_psbt: PSBT, exp_bytes: bytes) -> bool:
     return True
 
 
+def _unique_id_error(psbt: PSBT, expected: dict) -> str | None:
+    """Validate the BIP-375 unique identifier invariant for a step.
+
+    Every step of a workflow carries the same `expected.unique_id`, so checking
+    each step's resulting PSBT against it confirms no role alters transaction
+    identity. Steps without `unique_id` (the `create` step) are skipped.
+    """
+    exp_uid = expected.get("unique_id")
+    if exp_uid is None:
+        return None
+    got = unique_identifier(psbt)
+    if got != exp_uid:
+        return f"unique_id mismatch — got {got} expected {exp_uid}"
+    return None
+
+
 def _run_step(entry: dict, verbose: bool) -> bool:
     task = entry.get("supplementary", {}).get("task", "<missing task>")
     try:
@@ -310,6 +326,10 @@ def _run_step(entry: dict, verbose: bool) -> bool:
         psbt = None if task == "create" else PSBT.from_base64(entry["psbt"])
 
         if task == "transaction":
+            uid_err = _unique_id_error(psbt, expected)
+            if uid_err:
+                print(f"  {task}: FAILED — {uid_err}")
+                return False
             got_tx = extract_sp_transaction(psbt).serialize().hex()
             if got_tx == expected["tx"]:
                 print(f"  {task}: PASSED")
@@ -321,6 +341,12 @@ def _run_step(entry: dict, verbose: bool) -> bool:
             return False
 
         psbt = STEP_DISPATCH[task](psbt, supplementary)
+
+        uid_err = _unique_id_error(psbt, expected)
+        if uid_err:
+            print(f"  {task}: FAILED — {uid_err}")
+            return False
+
         exp_bytes = base64.b64decode(expected["psbt"])
 
         if task == "sign":

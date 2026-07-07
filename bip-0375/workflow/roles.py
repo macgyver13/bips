@@ -596,7 +596,6 @@ def finalize_sp_inputs(psbt: PSBT) -> PSBT:
 # Role 7: Extractor
 # =============================================================================
 
-# TODO: Validate final transaction correctness
 def extract_sp_transaction(psbt: PSBT) -> CTransaction:
     """
     Extractor role: Build final transaction from PSBT.
@@ -684,3 +683,39 @@ def _build_transaction_from_psbt(psbt: PSBT) -> "CTransaction":
     tx.nLockTime = 0
 
     return tx
+
+
+def unique_identifier(psbt: PSBT) -> str:
+    """Compute the BIP-375 PSBT unique identifier.
+
+    Per BIP-370 "Unique Identification" the id is the txid of an unsigned
+    transaction rebuilt from the PSBT with every input sequence forced to 0.
+    BIP-375 extends this: a silent payment output's scriptPubKey is not known
+    until the SP Output Finalizer runs, so the PSBT_OUT_SP_V0_INFO bytes are
+    used in place of the output script. This keeps the id stable from the
+    Constructor step through the Extractor.
+
+    Reference: compute_unique_id in the bip375-test-generator.
+    """
+    tx = CTransaction()
+    tx.version = _deserialize_psbt_uint32(psbt.g[PSBT_GLOBAL_TX_VERSION])
+    tx.nLockTime = 0
+
+    for input_map in psbt.i:
+        txid_int = int.from_bytes(input_map[PSBT_IN_PREVIOUS_TXID], "little")
+        vout = _deserialize_psbt_uint32(input_map[PSBT_IN_OUTPUT_INDEX])
+        # sequence forced to 0 per BIP-370
+        tx.vin.append(CTxIn(COutPoint(txid_int, vout), b"", 0))
+
+    for output_map in psbt.o:
+        amount = _deserialize_psbt_uint64(output_map[PSBT_OUT_AMOUNT])
+        if PSBT_OUT_SP_V0_INFO in output_map:
+            # Prepend the zero version byte per BIP-375.
+            script = b"\x00" + output_map[PSBT_OUT_SP_V0_INFO]
+        elif PSBT_OUT_SCRIPT in output_map:
+            script = output_map[PSBT_OUT_SCRIPT]
+        else:
+            script = b""
+        tx.vout.append(CTxOut(amount, script))
+
+    return tx.txid_hex

@@ -15,6 +15,23 @@ A reference validation implementation for BIP-375: Sending Silent Payments with 
 - **`deps/dleq.py`** - Reference DLEQ implementation from BIP-374
 - **`deps/secp256k1lab/`** - vendored copy of [secp256k1lab](https://github.com/secp256k1lab/secp256k1lab/commit/44dc4bd893b8f03e621585e3bf255253e0e0fbfb) library at version 1.0.0
 
+## Test Vector Format
+
+Each vector's `supplementary` block carries diagnostic material and is not itself
+validated; only the base64/hex PSBT is:
+
+- **`hex`** - the PSBT re-encoded as hex, alongside the base64 string
+- **`task`** - the outcome a runner should expect. `invalid` vectors use
+  `fail_deserialize` (must be rejected by the PSBT Structure check) or `fail_sign`
+  (must pass PSBT Structure and be rejected by a later check). `valid` vectors use
+  `finalize` (fully signed, ready to finalize) or `sign` (a valid but not-yet-signed
+  or partially-signed snapshot). `test_runner.py`'s `run_invalid_tests` gates on
+  `task` to confirm each invalid vector fails at the check its category implies, not
+  just that it fails somewhere.
+- **`inputs`** - `prevout_txid` is in display (RPC, big-endian) byte order, not the
+  internal little-endian order PSBT fields use. Every input carries its full
+  `non_witness_utxo` (the previous transaction) in addition to `witness_utxo`.
+
 ## Testing
 
 ### Run Tests

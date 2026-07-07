@@ -450,7 +450,6 @@ def finalize_sp_outputs(psbt: PSBT, input_pubkeys: List[bytes] = None) -> PSBT:
 # Role 5: Signer
 # =============================================================================
 
-# TODO: Validate multi-party signing works correctly
 def sign_sp_psbt(
     psbt: PSBT,
     input_private_keys: List[Tuple[int, bytes]],

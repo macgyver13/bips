@@ -236,15 +236,35 @@ def _strip_partial_sigs(psbt: PSBT) -> list[list[tuple[bytes, bytes]]]:
     return removed
 
 
+def _signed_pubkeys(sigs: list[tuple[bytes, bytes]]) -> set[bytes]:
+    return {pubkey for pubkey, _sig in sigs}
+
+
 def _compare_signed_step(got_psbt: PSBT, exp_bytes: bytes) -> bool:
     """For the `signed` step, ECDSA signature bytes are non-deterministic across
     RFC6979 implementations (Python vs rust-secp256k1). Strip PSBT_IN_PARTIAL_SIG
-    from both sides, compare the remaining map fields, and verify each got
-    signature.
+    from both sides, compare the remaining map fields, assert the same pubkeys
+    are signed per input, and verify each got signature.
     """
     exp_psbt = PSBT.from_base64(base64.b64encode(exp_bytes).decode())
     got_sigs = _strip_partial_sigs(got_psbt)
-    _strip_partial_sigs(exp_psbt)
+    exp_sigs = _strip_partial_sigs(exp_psbt)
+
+    if len(got_sigs) != len(exp_sigs):
+        print(
+            "  signed: FAILED - input signature list length differs: "
+            f"got {len(got_sigs)} expected {len(exp_sigs)}"
+        )
+        return False
+
+    for idx, (got_input_sigs, exp_input_sigs) in enumerate(zip(got_sigs, exp_sigs)):
+        got_pubkeys = _signed_pubkeys(got_input_sigs)
+        exp_pubkeys = _signed_pubkeys(exp_input_sigs)
+        if got_pubkeys != exp_pubkeys:
+            print(f"  signed: FAILED - input {idx} signed pubkeys differ")
+            print(f"    got:      {[pubkey.hex() for pubkey in sorted(got_pubkeys)]}")
+            print(f"    expected: {[pubkey.hex() for pubkey in sorted(exp_pubkeys)]}")
+            return False
 
     diffs = _map_field_diffs(got_psbt, exp_psbt)
     if diffs:

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Execute step-by-step workflow tests for BIP-375 PSBT test vectors.
+Validate step-by-step workflows for BIP-375 PSBT test vectors.
 
 Each entry in the `workflows` list is one role transition. The runner takes the
 incoming PSBT from top-level `psbt`, applies the role function, and compares the
@@ -12,7 +12,7 @@ import base64
 import sys
 from pathlib import Path
 
-project_root = Path(__file__).parent
+project_root = Path(__file__).parent.parent
 deps_dir = project_root / "deps"
 secp256k1lab_dir = deps_dir / "secp256k1lab" / "src"
 for path in [str(deps_dir), str(secp256k1lab_dir)]:
@@ -391,7 +391,7 @@ def _run_step(entry: dict, verbose: bool) -> bool:
         return False
 
 
-def run_workflow_tests(workflow_data: dict, verbose: bool = False) -> tuple[int, int]:
+def run_workflow_validation(workflow_data: dict, verbose: bool = False) -> tuple[int, int]:
     """Run every step entry under the top-level `workflows` key."""
     workflows = workflow_data.get("workflows", [])
     passed = 0

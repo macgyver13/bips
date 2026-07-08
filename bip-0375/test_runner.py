@@ -127,8 +127,8 @@ def main():
         description="Silent Payments PSBT Validator",
     )
     parser.add_argument(
-        "--test-file",
         "-f",
+        "--test-file",
         default=str(project_root / "bip375_test_vectors.json"),
         help="Test vector file to run (default: bip375_test_vectors.json)",
     )
@@ -140,16 +140,19 @@ def main():
         help="Verbosity level: -v shows pass/fail details, -vv enables debug output",
     )
     parser.add_argument(
+        "-va",
         "--valid",
         action="store_true",
         help="Run the valid PSBT section",
     )
     parser.add_argument(
+        "-i",
         "--invalid",
         action="store_true",
         help="Run the invalid PSBT section",
     )
     parser.add_argument(
+        "-w",
         "--workflow",
         action="store_true",
         help="Run the role-based workflow section",
@@ -183,11 +186,11 @@ def main():
 
     if run_all or args.workflow:
         # Imported here to keep the module-level import direction one-way:
-        # workflow_tests imports validate_bip375_psbt from this module.
-        from workflow_tests import run_workflow_tests
+        # workflow.validate_workflow imports validate_bip375_psbt from this module.
+        from workflow.validate_workflow import run_workflow_validation
 
         print("=== Workflow Tests ===")
-        p, f = run_workflow_tests(test_data, verbose=args.verbosity >= 1)
+        p, f = run_workflow_validation(test_data, verbose=args.verbosity >= 1)
         passed += p
         failed += f
         print()

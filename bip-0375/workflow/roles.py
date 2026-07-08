@@ -11,7 +11,7 @@ This module provides reference functions for each role in the PSBT workflow.
 import secrets
 from io import BytesIO
 from enum import Enum
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 
 from bitcoin_test.psbt import (
     PSBT_GLOBAL_VERSION,
@@ -50,7 +50,7 @@ from bitcoin_test.sighash import (
     SIGHASH_DEFAULT,
 )
 from dleq import dleq_generate_proof
-from validator.inputs import pubkey_from_eligible_input
+from validator.inputs import pubkey_from_eligible_input, is_input_eligible
 from validator.psbt_bip375 import (
     BIP375PSBT as PSBT,
     BIP375PSBTMap as PSBTMap,
@@ -66,39 +66,52 @@ from secp256k1lab.bip340 import schnorr_sign
 from validator.bip352_crypto import compute_silent_payment_output_script
 
 class PSBTState(Enum):
-    CREATED = "created"
-    CONSTRUCTED = "constructed"
-    UPDATED = "updated"
-    SP_FINALIZED = "sp_finalized"
-    SIGNED = "signed"
-    FINALIZED = "finalized"
-    TRANSACTION = "transaction"
+    # Member name = the role that produced the PSBT; value = the task verb the
+    # workflow vectors use for that step, so PSBTState(task) maps one to the other.
+    CREATOR = "create"
+    CONSTRUCTOR = "construct"
+    UPDATER = "update"
+    SIGNER = "sign"
+    FINALIZER = "finalize"
+    EXTRACTOR = "extract"
 
 class InvalidStateTransitionError(Exception):
     """Raised when a PSBT role function is called on a PSBT in an invalid state."""
     pass
 
 def detect_psbt_step(psbt: PSBT) -> PSBTState:
-    """Detect the current workflow step of a PSBT based on its contents."""
+    """Detect the role that last touched this PSBT.
+
+    Roles only add fields, so the current step is the latest role whose marker
+    field is present; check newest-first.
+
+    EXTRACTOR is never returned: the Extractor emits a transaction and leaves the
+    PSBT untouched, so it is indistinguishable from FINALIZER.
+    """
     if len(psbt.i) < 1 and len(psbt.o) < 1:
-        return PSBTState.CREATED
-        
+        return PSBTState.CREATOR
+
     if all(PSBT_IN_FINAL_SCRIPTWITNESS in inp for inp in psbt.i) and psbt.i:
-        return PSBTState.FINALIZED
-        
-    has_sigs = any(inp.get_all_by_type(PSBT_IN_PARTIAL_SIG) or PSBT_IN_TAP_KEY_SIG in inp for inp in psbt.i)
-    if has_sigs:
-        return PSBTState.SIGNED
-        
-    modifiable = psbt.g.get(PSBT_GLOBAL_TX_MODIFIABLE)
-    if modifiable == b'\x00':
-        return PSBTState.SP_FINALIZED
-        
+        return PSBTState.FINALIZER
+
+    # The Signer contributes the ECDH shares, so a share marks the Signer step even
+    # before any signature exists: a party holding only some of the inputs must wait
+    # for full share coverage before it may sign.
     has_ecdh = psbt.g.get_all_by_type(PSBT_GLOBAL_SP_ECDH_SHARE) or any(inp.get_all_by_type(PSBT_IN_SP_ECDH_SHARE) for inp in psbt.i)
-    if has_ecdh:
-        return PSBTState.UPDATED
-        
-    return PSBTState.CONSTRUCTED
+    has_sigs = any(inp.get_all_by_type(PSBT_IN_PARTIAL_SIG) or PSBT_IN_TAP_KEY_SIG in inp for inp in psbt.i)
+    if has_ecdh or has_sigs:
+        return PSBTState.SIGNER
+
+    has_updates = any(
+        PSBT_IN_WITNESS_UTXO in inp
+        or PSBT_IN_NON_WITNESS_UTXO in inp
+        or inp.get_all_by_type(PSBT_IN_BIP32_DERIVATION)
+        for inp in psbt.i
+    )
+    if has_updates:
+        return PSBTState.UPDATER
+
+    return PSBTState.CONSTRUCTOR
 
 
 # =============================================================================
@@ -167,7 +180,7 @@ def construct_sp_psbt(
     Returns:
         PSBT with inputs and outputs added
     """
-    if detect_psbt_step(psbt) != PSBTState.CREATED:
+    if detect_psbt_step(psbt) != PSBTState.CREATOR:
         raise InvalidStateTransitionError("PSBT must be empty to construct inputs and outputs")
 
     if regular_outputs is None:
@@ -220,10 +233,12 @@ def update_sp_psbt(
     input_utxos: List[Dict],
     input_derivations: List[Dict] = None,
     output_derivations: List[Dict] = None,
-    input_private_keys: List[Optional[int]] = None,
 ) -> PSBT:
     """
-    Updater role: Add UTXO info, BIP32 derivations, and ECDH shares.
+    Updater role: Add UTXO info and BIP32 derivations.
+
+    The Updater is not assumed to hold any private key; the ECDH shares and DLEQ
+    proofs are Signer material (see sign_sp_psbt).
 
     Args:
         psbt: PSBT from Constructor
@@ -241,17 +256,13 @@ def update_sp_psbt(
             - spend_pubkey: bytes
             - spend_fingerprint: bytes
             - spend_path: List[int]
-        input_private_keys: List of private keys (int) per input for ECDH,
-            aligned positionally with psbt.i; use None for inputs whose key
-            this caller does not hold. Holding the key for every input produces
-            a global ECDH share; holding only some produces per-input shares.
 
     Returns:
-        PSBT with UTXO info, derivations, and optionally ECDH shares
+        PSBT with UTXO info and derivations
     """
     # Allow re-entry from UPDATED so multiple parties can each add their
-    # per-input shares across successive update calls (multi-party).
-    if detect_psbt_step(psbt) not in (PSBTState.CONSTRUCTED, PSBTState.UPDATED):
+    # UTXO and derivation data across successive update calls (multi-party).
+    if detect_psbt_step(psbt) not in (PSBTState.CONSTRUCTOR, PSBTState.UPDATER):
         raise InvalidStateTransitionError("PSBT must be in 'constructed' or 'updated' state to update")
 
     if input_derivations is None:
@@ -305,38 +316,16 @@ def update_sp_psbt(
                 PSBT_OUT_BIP32_DERIVATION, deriv["spend_pubkey"], spend_value
             )
 
-    # Compute ECDH shares if private keys provided
-    if input_private_keys:
-        # Collect all scan keys from SP outputs
-        scan_keys = set()
-        for output_map in psbt.o:
-            if PSBT_OUT_SP_V0_INFO in output_map:
-                sp_info = output_map[PSBT_OUT_SP_V0_INFO]
-                scan_keys.add(sp_info[:33])
-
-        # BIP-375: create a global share only when this caller holds the private
-        # keys for every input. Holding only some keys yields per-input shares,
-        # which combine across successive updates (the multi-party case).
-        held = [pk for pk in input_private_keys if pk is not None]
-        if len(held) == len(psbt.i):
-            # Sum all private keys for global ECDH
-            a_sum = sum(held) % GE.ORDER
-
-            for scan_key in scan_keys:
-                ecdh_share, proof = _create_ecdh_share_and_proof(a_sum, scan_key)
-                psbt.g.set_by_key(PSBT_GLOBAL_SP_ECDH_SHARE, scan_key, ecdh_share)
-                psbt.g.set_by_key(PSBT_GLOBAL_SP_DLEQ, scan_key, proof)
-        else:
-            # Per-input ECDH shares for the inputs whose key is held
-            for input_map, privkey in zip(psbt.i, input_private_keys):
-                if privkey is None:
-                    continue
-                for scan_key in scan_keys:
-                    ecdh_share, proof = _create_ecdh_share_and_proof(privkey, scan_key)
-                    input_map.set_by_key(PSBT_IN_SP_ECDH_SHARE, scan_key, ecdh_share)
-                    input_map.set_by_key(PSBT_IN_SP_DLEQ, scan_key, proof)
-
     return psbt
+
+
+def _sp_scan_keys(psbt: PSBT) -> set:
+    """Every scan key referenced by a silent payment output."""
+    return {
+        output_map[PSBT_OUT_SP_V0_INFO][:33]
+        for output_map in psbt.o
+        if PSBT_OUT_SP_V0_INFO in output_map
+    }
 
 
 def _create_ecdh_share_and_proof(a: int, scan_key_bytes: bytes) -> tuple[bytes, bytes]:
@@ -352,25 +341,24 @@ def _create_ecdh_share_and_proof(a: int, scan_key_bytes: bytes) -> tuple[bytes, 
 
 
 # =============================================================================
-# Role 4: SP Output Finalizer
+# Silent payment output scripts (a Signer duty, see sign_sp_psbt)
 # =============================================================================
 
 
-def finalize_sp_outputs(psbt: PSBT, input_pubkeys: List[bytes] = None) -> PSBT:
+def _compute_sp_output_scripts(psbt: PSBT, input_pubkeys: List[bytes] = None) -> PSBT:
     """
-    SP Output Finalizer role: Compute and set output scripts for SP outputs.
+    Compute and set the output scripts for SP outputs, then clear the modifiable
+    flags. The caller must have established that every eligible input carries an
+    ECDH share for every scan key (see _has_full_ecdh_coverage).
 
     Args:
-        psbt: PSBT with ECDH shares from Updater
+        psbt: PSBT with complete ECDH share coverage
         input_pubkeys: List of 33-byte compressed pubkeys per input
                       (if not provided, extracted from PSBT)
 
     Returns:
         PSBT with PSBT_OUT_SCRIPT set for SP outputs
     """
-    if detect_psbt_step(psbt) != PSBTState.UPDATED:
-        raise InvalidStateTransitionError("PSBT must be in 'updated' state (has ECDH shares) to finalize SP outputs")
-
     # Extract input pubkeys if not provided
     if input_pubkeys is None:
         input_pubkeys = []
@@ -447,8 +435,57 @@ def finalize_sp_outputs(psbt: PSBT, input_pubkeys: List[bytes] = None) -> PSBT:
 
 
 # =============================================================================
-# Role 5: Signer
+# Role 4: Signer
 # =============================================================================
+
+
+def _has_full_ecdh_coverage(psbt: PSBT) -> bool:
+    """True when every scan key is covered by a global share, or by a per-input
+    share on every eligible input. Only then can the SP output scripts be computed."""
+    for scan_key in _sp_scan_keys(psbt):
+        if psbt.g.get_by_key(PSBT_GLOBAL_SP_ECDH_SHARE, scan_key):
+            continue
+        eligible = [inp for inp in psbt.i if is_input_eligible(inp)]
+        if not eligible or not all(
+            inp.get_by_key(PSBT_IN_SP_ECDH_SHARE, scan_key) for inp in eligible
+        ):
+            return False
+    return True
+
+
+def _add_ecdh_shares(psbt: PSBT, input_private_keys: List[Tuple[int, bytes]]) -> None:
+    """Add this party's ECDH shares and DLEQ proofs.
+
+    A party holding the private key for every input publishes a single global share
+    over the summed keys; a party holding only some publishes per-input shares, which
+    combine with the other parties' across successive Signer calls. Shares already in
+    the PSBT are left alone so another party's DLEQ proof is never overwritten.
+    """
+    scan_keys = _sp_scan_keys(psbt)
+    if not scan_keys or not input_private_keys:
+        return
+
+    privkeys = [int.from_bytes(pk, "big") for _, pk in input_private_keys]
+
+    if len(input_private_keys) == len(psbt.i):
+        a_sum = sum(privkeys) % GE.ORDER
+        for scan_key in scan_keys:
+            if psbt.g.get_by_key(PSBT_GLOBAL_SP_ECDH_SHARE, scan_key):
+                continue
+            ecdh_share, proof = _create_ecdh_share_and_proof(a_sum, scan_key)
+            psbt.g.set_by_key(PSBT_GLOBAL_SP_ECDH_SHARE, scan_key, ecdh_share)
+            psbt.g.set_by_key(PSBT_GLOBAL_SP_DLEQ, scan_key, proof)
+        return
+
+    for (idx, _), a in zip(input_private_keys, privkeys):
+        input_map = psbt.i[idx]
+        for scan_key in scan_keys:
+            if input_map.get_by_key(PSBT_IN_SP_ECDH_SHARE, scan_key):
+                continue
+            ecdh_share, proof = _create_ecdh_share_and_proof(a, scan_key)
+            input_map.set_by_key(PSBT_IN_SP_ECDH_SHARE, scan_key, ecdh_share)
+            input_map.set_by_key(PSBT_IN_SP_DLEQ, scan_key, proof)
+
 
 def sign_sp_psbt(
     psbt: PSBT,
@@ -456,22 +493,40 @@ def sign_sp_psbt(
     input_indices: List[int] = None,
 ) -> PSBT:
     """
-    Signer role: Sign inputs.
+    Signer role: Contribute ECDH shares, compute the SP output scripts once every
+    eligible input is covered, and sign.
+
+    A Signer that cannot yet compute the output scripts (another party's share is
+    still missing) contributes its share and returns unsigned: BIP-375 forbids
+    signing before the output scripts commit. That party signs on a later call,
+    once the last Signer has set the scripts.
 
     Args:
-        psbt: PSBT with finalized SP outputs
-        input_private_keys: List of (index, private_key_bytes) tuples
+        psbt: PSBT from the Updater, or from a previous Signer
+        input_private_keys: List of (index, private_key_bytes) tuples for the inputs
+            whose key this party holds
         input_indices: Indices of inputs to sign (if None, sign all with matching keys)
 
     Returns:
-        PSBT with signatures added
+        PSBT with ECDH shares added, and signatures if the output scripts are set
 
     Note: Multi-party signing is supported by calling this function multiple
     times with different private keys - the PSBT can be passed between parties.
     """
     current_state = detect_psbt_step(psbt)
-    if current_state not in (PSBTState.SP_FINALIZED, PSBTState.SIGNED):
-        raise InvalidStateTransitionError(f"PSBT outputs must be SP finalized before signing (current: {current_state})")
+    if current_state not in (PSBTState.UPDATER, PSBTState.SIGNER):
+        raise InvalidStateTransitionError(f"PSBT must be updated before signing (current: {current_state})")
+
+    _add_ecdh_shares(psbt, input_private_keys)
+
+    sp_outputs = [om for om in psbt.o if PSBT_OUT_SP_V0_INFO in om]
+    if any(PSBT_OUT_SCRIPT not in om for om in sp_outputs) and _has_full_ecdh_coverage(psbt):
+        _compute_sp_output_scripts(psbt)
+
+    if any(PSBT_OUT_SCRIPT not in om for om in sp_outputs):
+        # Not every eligible input carries a share yet, so the output scripts are not
+        # computable and must not be committed to by a signature.
+        return psbt
 
     if input_indices is None:
         input_indices = [idx for idx, _ in input_private_keys]
@@ -536,7 +591,7 @@ def sign_sp_psbt(
 
 
 # =============================================================================
-# Role 6: Input Finalizer
+# Role 5: Input Finalizer
 # =============================================================================
 
 def finalize_sp_inputs(psbt: PSBT) -> PSBT:
@@ -553,7 +608,7 @@ def finalize_sp_inputs(psbt: PSBT) -> PSBT:
         PSBT with PSBT_IN_FINAL_SCRIPTWITNESS set and intermediate fields pruned
     """
     current_state = detect_psbt_step(psbt)
-    if current_state not in (PSBTState.SIGNED, PSBTState.FINALIZED):
+    if current_state not in (PSBTState.SIGNER, PSBTState.FINALIZER):
         raise InvalidStateTransitionError(f"PSBT must have signatures to finalize inputs (current: {current_state})")
 
     keep_types = {
@@ -593,7 +648,7 @@ def finalize_sp_inputs(psbt: PSBT) -> PSBT:
 
 
 # =============================================================================
-# Role 7: Extractor
+# Role 6: Extractor
 # =============================================================================
 
 def extract_sp_transaction(psbt: PSBT) -> CTransaction:
@@ -606,7 +661,7 @@ def extract_sp_transaction(psbt: PSBT) -> CTransaction:
     Returns:
         Final CTransaction object
     """
-    if detect_psbt_step(psbt) != PSBTState.FINALIZED:
+    if detect_psbt_step(psbt) != PSBTState.FINALIZER:
         raise InvalidStateTransitionError("All inputs must have final scriptwitness before extraction")
 
     tx = _build_transaction_from_psbt(psbt)

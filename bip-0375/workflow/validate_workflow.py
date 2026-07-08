@@ -22,25 +22,22 @@ for path in [str(deps_dir), str(secp256k1lab_dir)]:
 from workflow.roles import (
     create_psbt,
     construct_sp_psbt,
-    finalize_sp_outputs,
+    update_sp_psbt,
     sign_sp_psbt,
     finalize_sp_inputs,
     extract_sp_transaction,
     detect_psbt_step,
+    PSBTState,
 )
 from validator.psbt_bip375 import (
     BIP375PSBT as PSBT,
-    PSBT_GLOBAL_SP_ECDH_SHARE,
     PSBT_GLOBAL_SP_DLEQ,
-    PSBT_IN_SP_ECDH_SHARE,
     PSBT_IN_SP_DLEQ,
 )
 from deps.bitcoin_test.psbt import (
     PSBT_IN_WITNESS_UTXO,
-    PSBT_IN_BIP32_DERIVATION,
     PSBT_IN_PARTIAL_SIG,
 )
-from secp256k1lab.secp256k1 import GE
 from deps.bitcoin_test.signing import ECPubKey
 from deps.bitcoin_test.sighash import SegwitV0SignatureHash, make_p2wpkh_script_code, SIGHASH_ALL
 from deps.bitcoin_test.transaction import CTxOut
@@ -54,11 +51,11 @@ def _split_sp_v0_info(info_hex: str) -> tuple[bytes, bytes]:
     return info[:33], info[33:66]
 
 
-def _step_created(_psbt: PSBT | None, _supplementary: dict) -> PSBT:
+def _step_create(_psbt: PSBT | None, _supplementary: dict) -> PSBT:
     return create_psbt()
 
 
-def _step_constructed(_psbt: PSBT | None, supplementary: dict) -> PSBT:
+def _step_construct(_psbt: PSBT | None, supplementary: dict) -> PSBT:
     # spdk's `create(n, m)` scaffold in top-level `psbt` pre-declares input/
     # output slots; roles.py's Constructor appends slots to an empty PSBT, so
     # we ignore the scaffold and build from a fresh empty PSBT instead.
@@ -87,100 +84,60 @@ def _step_constructed(_psbt: PSBT | None, supplementary: dict) -> PSBT:
     return construct_sp_psbt(psbt, inputs, sp_outputs, regular_outputs)
 
 
-def _step_updated(psbt: PSBT | None, supplementary: dict) -> PSBT:
-    """Apply deterministic updater fields and inject pre-computed SP proofs.
+def _step_update(psbt: PSBT | None, supplementary: dict) -> PSBT:
+    """Add UTXO and BIP32 derivation data.
 
-    The reference Updater uses fresh randomness for DLEQ proofs, so we cannot
-    byte-match by calling update_sp_psbt directly. Instead we install the UTXO,
-    BIP32 derivation, and the supplied (ecdh_share, dleq_proof) pair from the
-    vector.
-
-    Global vs per-input form is derived without any input_index: a single input
-    always uses a global share, and with multiple inputs the form is global only
-    when every input carries a private key (the caller holds them all), otherwise
-    per-input. In the per-input case this step sets shares only for the inputs
-    whose private key it holds, matching each held input to its proof via
-    ecdh_share == privkey * scan_key (other signers' proofs are ignored, so
-    successive update calls each contribute their own shares).
+    The Updater holds no private key and adds no ECDH share, so nothing here is
+    randomized and the reference role function can be driven directly.
     """
     inputs = supplementary["inputs"]
-    for inp in inputs:
-        input_map = psbt.i[inp["input_index"]]
-        input_map[PSBT_IN_WITNESS_UTXO] = bytes.fromhex(inp["witness_utxo"])
-        input_map.set_by_key(
-            PSBT_IN_BIP32_DERIVATION,
-            bytes.fromhex(inp["public_key"]),
-            bytes(4),
-        )
+    utxos = [{"witness_utxo": bytes.fromhex(inp["witness_utxo"])} for inp in inputs]
+    derivations = [
+        {"pubkey": bytes.fromhex(inp["public_key"]), "fingerprint": bytes(4), "path": []}
+        for inp in inputs
+    ]
+    return update_sp_psbt(psbt, utxos, derivations)
 
-    proofs = supplementary.get("sp_proofs", [])
-    if not proofs:
-        return psbt
 
-    # Single input -> global; multiple inputs -> global only if every input
-    # holds a key, otherwise per-input.
-    held_inputs = [inp for inp in inputs if inp.get("private_key")]
-    use_global = len(inputs) == 1 or len(held_inputs) == len(inputs)
+def _step_sign(psbt: PSBT | None, supplementary: dict) -> PSBT:
+    """Contribute this party's ECDH shares and signatures.
 
-    if use_global:
-        for proof in proofs:
-            scan_key = bytes.fromhex(proof["scan_key"])
-            psbt.g.set_by_key(
-                PSBT_GLOBAL_SP_ECDH_SHARE, scan_key, bytes.fromhex(proof["ecdh_share"])
-            )
-            psbt.g.set_by_key(
-                PSBT_GLOBAL_SP_DLEQ, scan_key, bytes.fromhex(proof["dleq_proof"])
-            )
-        return psbt
+    The party acts for every input whose private key the vector discloses, not only
+    the ones it ends up signing: the first Signer of a per-input-share workflow
+    contributes a share but cannot yet sign. Whether it signs is decided by
+    sign_sp_psbt, from whether the output scripts are computable.
 
-    for inp in held_inputs:
-        a = int.from_bytes(bytes.fromhex(inp["private_key"]), "big")
-        input_map = psbt.i[inp["input_index"]]
-        for proof in proofs:
-            scan_key = bytes.fromhex(proof["scan_key"])
-            ecdh_share = bytes.fromhex(proof["ecdh_share"])
-            if (a * GE.from_bytes(scan_key)).to_bytes_compressed() != ecdh_share:
-                continue
-            input_map.set_by_key(PSBT_IN_SP_ECDH_SHARE, scan_key, ecdh_share)
-            input_map.set_by_key(
-                PSBT_IN_SP_DLEQ, scan_key, bytes.fromhex(proof["dleq_proof"])
-            )
+    The reference Signer draws fresh randomness for each DLEQ proof, so the proofs
+    are overwritten with the vector's deterministic ones. The ECDH share itself is
+    a*B and therefore deterministic, so it stays under test.
+    """
+    held = [
+        (inp["input_index"], bytes.fromhex(inp["private_key"]))
+        for inp in supplementary["inputs"]
+        if inp.get("private_key")
+    ]
+    psbt = sign_sp_psbt(psbt, held)
+
+    for proof in supplementary.get("sp_proofs", []):
+        scan_key = bytes.fromhex(proof["scan_key"])
+        dleq = bytes.fromhex(proof["dleq_proof"])
+        if "input_index" in proof:
+            psbt.i[proof["input_index"]].set_by_key(PSBT_IN_SP_DLEQ, scan_key, dleq)
+        else:
+            psbt.g.set_by_key(PSBT_GLOBAL_SP_DLEQ, scan_key, dleq)
     return psbt
 
 
-def _step_sp_finalized(psbt: PSBT | None, _supplementary: dict) -> PSBT:
-    return finalize_sp_outputs(psbt)
-
-
-def _step_signed(psbt: PSBT | None, supplementary: dict) -> PSBT:
-    signers = [
-        (inp["input_index"], bytes.fromhex(inp["private_key"]))
-        for inp in supplementary["inputs"]
-        if inp.get("signed") and "private_key" in inp
-    ]
-    return sign_sp_psbt(psbt, signers)
-
-
-def _step_finalized(psbt: PSBT | None, _supplementary: dict) -> PSBT:
+def _step_finalize(psbt: PSBT | None, _supplementary: dict) -> PSBT:
     return finalize_sp_inputs(psbt)
 
 
 STEP_DISPATCH = {
-    "create": _step_created,
-    "construct": _step_constructed,
-    "update": _step_updated,
-    "sp_finalize": _step_sp_finalized,
-    "sign": _step_signed,
-    "finalize": _step_finalized,
-}
-
-EXPECTED_STATE_BY_TASK = {
-    "create": "created",
-    "construct": "constructed",
-    "update": "updated",
-    "sp_finalize": "sp_finalized",
-    "sign": "signed",
-    "finalize": "finalized",
+    "create": _step_create,
+    "construct": _step_construct,
+    "update": _step_update,
+    "sign": _step_sign,
+    "finalize": _step_finalize,
 }
 
 
@@ -325,14 +282,16 @@ def _run_step(entry: dict, verbose: bool) -> bool:
         task = supplementary["task"]
         psbt = None if task == "create" else PSBT.from_base64(entry["psbt"])
 
-        if task == "transaction":
+        # The Extractor leaves the PSBT untouched, so it is checked against the raw
+        # transaction rather than an expected PSBT.
+        if task == "extract":
             uid_err = _unique_id_error(psbt, expected)
             if uid_err:
                 print(f"  {task}: FAILED — {uid_err}")
                 return False
             got_tx = extract_sp_transaction(psbt).serialize().hex()
             if got_tx == expected["tx"]:
-                print(f"  {task}: PASSED")
+                print(f"  {task}: PASSED ({description})")
                 return True
             print(f"  {task}: FAILED — extracted tx differs")
             if verbose:
@@ -347,40 +306,41 @@ def _run_step(entry: dict, verbose: bool) -> bool:
             print(f"  {task}: FAILED — {uid_err}")
             return False
 
-        exp_bytes = base64.b64decode(expected["psbt"])
+        detected = detect_psbt_step(psbt)
+        expected_state = PSBTState(task)
+        # The Finalizer prunes the PSBT_IN_* fields the BIP-375 checks need, so its
+        # result cannot be validated; assume valid.
+        if task == "finalize":
+            is_valid, msg = True, None
+        else:
+            is_valid, msg = validate_bip375_psbt(
+                base64.b64encode(psbt.serialize()).decode(), checks=None
+            )
 
-        if task == "sign":
-            if _compare_signed_step(psbt, exp_bytes):
-                print(f"  {task}: PASSED ({description})")
-                return True
-            return False
+        # ECDSA partial sigs are non-deterministic, so a signed PSBT is compared with
+        # the signatures stripped and separately verified. A deferred sign step (share
+        # added, output scripts not yet computable, nothing signed) has no such fields
+        # and compares directly. _compare_signed_step mutates psbt, so it runs last.
+        has_sigs = any(inp.get_all_by_type(PSBT_IN_PARTIAL_SIG) for inp in psbt.i)
+        if task == "sign" and has_sigs:
+            if not _compare_signed_step(psbt, base64.b64decode(expected["psbt"])):
+                return False
+        else:
+            diffs = _map_field_diffs(psbt, PSBT.from_base64(expected["psbt"]))
+            if diffs:
+                print(f"  {task}: FAILED — map fields differ:")
+                for d in diffs:
+                    print(f"    {d}")
+                return False
 
-        exp_psbt = PSBT.from_base64(expected["psbt"])
-        diffs = _map_field_diffs(psbt, exp_psbt)
-        if not diffs:
-            detected = detect_psbt_step(psbt).name.lower()
-            # Assume the PSBT is valid unless the task is "finalize" or validation fails without required PSBT_IN_* fields
-            if task == "finalize":
-                is_valid = True
-            else:
-                is_valid, msg = validate_bip375_psbt(
-                    base64.b64encode(psbt.serialize()).decode(), checks=None
-                )
-            expected_state = EXPECTED_STATE_BY_TASK[task]
-            step_ok = detected == expected_state
-            if step_ok and is_valid:
-                print(f"  {task}: PASSED ({description})")
-                return True
-            print(f"  {task}: FAILED — map fields match but state/validation off")
-            if not step_ok:
-                print(f"    detected step={detected}, expected={expected_state}")
-            if not is_valid:
-                print(f"    validation: {msg}")
-            return False
-
-        print(f"  {task}: FAILED — map fields differ:")
-        for d in diffs:
-            print(f"    {d}")
+        if detected == expected_state and is_valid:
+            print(f"  {task}: PASSED ({description})")
+            return True
+        print(f"  {task}: FAILED — map fields match but state/validation off")
+        if detected != expected_state:
+            print(f"    detected step={detected.value}, expected={task}")
+        if not is_valid:
+            print(f"    validation: {msg}")
         return False
 
     except Exception as e:

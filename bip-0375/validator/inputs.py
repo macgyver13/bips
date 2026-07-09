@@ -20,7 +20,13 @@ from deps.bitcoin_test.psbt import (
     PSBT_IN_TAP_INTERNAL_KEY,
     PSBT_IN_WITNESS_UTXO,
 )
-from deps.bitcoin_test.utils import deser_string_vector
+from deps.bitcoin_test.utils import (
+    deser_string_vector,
+    is_p2pkh,
+    is_p2sh,
+    is_p2tr,
+    is_p2wpkh,
+)
 from secp256k1lab.secp256k1 import GE
 
 from .psbt_bip375 import (
@@ -126,7 +132,7 @@ def pubkey_from_eligible_input(input_map: BIP375PSBTMap) -> Optional[GE]:
 
     # Try PSBT_IN_WITNESS_UTXO for P2TR inputs
     spk = parse_witness_utxo(input_map[PSBT_IN_WITNESS_UTXO])
-    if spk and _is_p2tr(spk):
+    if spk and is_p2tr(spk):
         return GE.from_bytes(bytes([0x02]) + spk[2:34])
 
     # Post-finalize fallback: BIP32 derivations are pruned by the Input Finalizer,
@@ -202,15 +208,15 @@ def is_input_eligible(input_map: BIP375PSBTMap) -> bool:
     NUMS_H = bytes.fromhex(
         "50929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac0"
     )
-    if _is_p2tr(script_pubkey):
+    if is_p2tr(script_pubkey):
         tap_internal_key = input_map.get(PSBT_IN_TAP_INTERNAL_KEY)
         if tap_internal_key == NUMS_H:
             return False
 
-    if _is_p2sh(script_pubkey):
+    if is_p2sh(script_pubkey):
         if PSBT_IN_REDEEM_SCRIPT in input_map:
             redeem_script = input_map[PSBT_IN_REDEEM_SCRIPT]
-            if not _is_p2wpkh(redeem_script):
+            if not is_p2wpkh(redeem_script):
                 return False
         else:
             assert False
@@ -220,42 +226,8 @@ def is_input_eligible(input_map: BIP375PSBTMap) -> bool:
 def _has_eligible_script_type(script_pubkey: bytes) -> bool:
     """True if scriptPubKey is eligible for silent payments"""
     return (
-        _is_p2pkh(script_pubkey)
-        or _is_p2wpkh(script_pubkey)
-        or _is_p2tr(script_pubkey)
-        or _is_p2sh(script_pubkey)
-    )
-
-
-def _is_p2tr(spk: bytes) -> bool:
-    if len(spk) != 34:
-        return False
-    # OP_1 OP_PUSHBYTES_32 <32 bytes>
-    return (spk[0] == 0x51) & (spk[1] == 0x20)
-
-
-def _is_p2wpkh(spk: bytes) -> bool:
-    if len(spk) != 22:
-        return False
-    # OP_0 OP_PUSHBYTES_20 <20 bytes>
-    return (spk[0] == 0x00) & (spk[1] == 0x14)
-
-
-def _is_p2sh(spk: bytes) -> bool:
-    if len(spk) != 23:
-        return False
-    # OP_HASH160 OP_PUSHBYTES_20 <20 bytes> OP_EQUAL
-    return (spk[0] == 0xA9) & (spk[1] == 0x14) & (spk[-1] == 0x87)
-
-
-def _is_p2pkh(spk: bytes) -> bool:
-    if len(spk) != 25:
-        return False
-    # OP_DUP OP_HASH160 OP_PUSHBYTES_20 <20 bytes> OP_EQUALVERIFY OP_CHECKSIG
-    return (
-        (spk[0] == 0x76)
-        & (spk[1] == 0xA9)
-        & (spk[2] == 0x14)
-        & (spk[-2] == 0x88)
-        & (spk[-1] == 0xAC)
+        is_p2pkh(script_pubkey)
+        or is_p2wpkh(script_pubkey)
+        or is_p2tr(script_pubkey)
+        or is_p2sh(script_pubkey)
     )

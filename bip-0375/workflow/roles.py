@@ -34,7 +34,6 @@ from bitcoin_test.psbt import (
 )
 from bitcoin_test.transaction import CTransaction, CTxIn, CTxOut, COutPoint
 from bitcoin_test.utils import (
-    ser_compact_size,
     is_p2wpkh,
     is_p2tr,
     from_binary,
@@ -50,7 +49,7 @@ from bitcoin_test.sighash import (
     SIGHASH_DEFAULT,
 )
 from dleq import dleq_generate_proof
-from validator.inputs import pubkey_from_eligible_input, is_input_eligible
+from validator.inputs import sp_scan_keys, scan_key_is_covered
 from validator.psbt_bip375 import (
     BIP375PSBT as PSBT,
     BIP375PSBTMap as PSBTMap,
@@ -63,7 +62,8 @@ from validator.psbt_bip375 import (
 )
 from secp256k1lab.secp256k1 import GE
 from secp256k1lab.bip340 import schnorr_sign
-from validator.bip352_crypto import compute_silent_payment_output_script
+from validator.bip352_crypto import derive_sp_output_scripts
+from validator.validate_psbt import validate_ecdh_coverage, validate_output_scripts
 
 class PSBTState(Enum):
     # Member name = the role that produced the PSBT; value = the task verb the
@@ -319,15 +319,6 @@ def update_sp_psbt(
     return psbt
 
 
-def _sp_scan_keys(psbt: PSBT) -> set:
-    """Every scan key referenced by a silent payment output."""
-    return {
-        output_map[PSBT_OUT_SP_V0_INFO][:33]
-        for output_map in psbt.o
-        if PSBT_OUT_SP_V0_INFO in output_map
-    }
-
-
 def _create_ecdh_share_and_proof(a: int, scan_key_bytes: bytes) -> tuple[bytes, bytes]:
     """Internal helper to generate ECDH share and DLEQ proof."""
     B_scan = GE.from_bytes(scan_key_bytes)
@@ -345,88 +336,21 @@ def _create_ecdh_share_and_proof(a: int, scan_key_bytes: bytes) -> tuple[bytes, 
 # =============================================================================
 
 
-def _compute_sp_output_scripts(psbt: PSBT, input_pubkeys: List[bytes] = None) -> PSBT:
+def _compute_sp_output_scripts(psbt: PSBT) -> PSBT:
     """
     Compute and set the output scripts for SP outputs, then clear the modifiable
     flags. The caller must have established that every eligible input carries an
     ECDH share for every scan key (see _has_full_ecdh_coverage).
 
-    Args:
-        psbt: PSBT with complete ECDH share coverage
-        input_pubkeys: List of 33-byte compressed pubkeys per input
-                      (if not provided, extracted from PSBT)
-
     Returns:
         PSBT with PSBT_OUT_SCRIPT set for SP outputs
     """
-    # Extract input pubkeys if not provided
-    if input_pubkeys is None:
-        input_pubkeys = []
-        for input_map in psbt.i:
-            pubkey = pubkey_from_eligible_input(input_map)
-            if pubkey is None:
-                raise ValueError(
-                    "Cannot extract pubkey: no BIP32 derivation, TAP_INTERNAL_KEY, "
-                    "or recognizable witness_utxo found"
-                )
-            input_pubkeys.append(pubkey)
-
-    # Build outpoints list
-    outpoints = []
-    for input_map in psbt.i:
-        txid_bytes = input_map[PSBT_IN_PREVIOUS_TXID]
-        vout = _deserialize_psbt_uint32(input_map[PSBT_IN_OUTPUT_INDEX])
-        txid_int = int.from_bytes(txid_bytes, "little")
-        outpoints.append(COutPoint(txid_int, vout))
-
-    # Sum input pubkeys
-    summed_pubkey = None
-    for pubkey in input_pubkeys:
-        summed_pubkey = pubkey if summed_pubkey is None else summed_pubkey + pubkey
-    summed_pubkey_bytes = summed_pubkey.to_bytes_compressed()
-
-    # Track k values per scan key
-    scan_key_k_values = {}
-
-    # Compute output scripts for each SP output
-    for output_map in psbt.o:
-        if PSBT_OUT_SP_V0_INFO not in output_map:
-            continue
-
-        sp_info = output_map[PSBT_OUT_SP_V0_INFO]
-        scan_key = sp_info[:33]
-        spend_key = sp_info[33:]
-
-        # Get k value for this scan key
-        k = scan_key_k_values.get(scan_key, 0)
-
-        # Get ECDH share (global or summed from per-input)
-        ecdh_share = psbt.g.get_by_key(PSBT_GLOBAL_SP_ECDH_SHARE, scan_key)
-
-        if not ecdh_share:
-            # Sum per-input ECDH shares
-            summed_ecdh = None
-            for input_map in psbt.i:
-                input_ecdh = input_map.get_by_key(PSBT_IN_SP_ECDH_SHARE, scan_key)
-                if input_ecdh:
-                    point = GE.from_bytes(input_ecdh)
-                    summed_ecdh = point if summed_ecdh is None else summed_ecdh + point
-
-            if summed_ecdh is None:
-                raise ValueError(f"No ECDH share found for scan key {scan_key.hex()}")
-            ecdh_share = summed_ecdh.to_bytes_compressed()
-
-        # Compute output script
-        script = compute_silent_payment_output_script(
-            outpoints=outpoints,
-            summed_pubkey_bytes=summed_pubkey_bytes,
-            ecdh_share_bytes=ecdh_share,
-            spend_pubkey_bytes=spend_key,
-            k=k,
-        )
-
+    for _output_idx, output_map, script in derive_sp_output_scripts(psbt):
+        if script is None:
+            raise ValueError(
+                "Cannot compute SP output script: missing ECDH share or input pubkeys"
+            )
         output_map[PSBT_OUT_SCRIPT] = script
-        scan_key_k_values[scan_key] = k + 1
 
     # Clear modifiable flag (no more modifications allowed)
     psbt.g[PSBT_GLOBAL_TX_MODIFIABLE] = bytes([0x00])
@@ -442,15 +366,7 @@ def _compute_sp_output_scripts(psbt: PSBT, input_pubkeys: List[bytes] = None) ->
 def _has_full_ecdh_coverage(psbt: PSBT) -> bool:
     """True when every scan key is covered by a global share, or by a per-input
     share on every eligible input. Only then can the SP output scripts be computed."""
-    for scan_key in _sp_scan_keys(psbt):
-        if psbt.g.get_by_key(PSBT_GLOBAL_SP_ECDH_SHARE, scan_key):
-            continue
-        eligible = [inp for inp in psbt.i if is_input_eligible(inp)]
-        if not eligible or not all(
-            inp.get_by_key(PSBT_IN_SP_ECDH_SHARE, scan_key) for inp in eligible
-        ):
-            return False
-    return True
+    return all(scan_key_is_covered(psbt, sk) for sk in sp_scan_keys(psbt))
 
 
 def _add_ecdh_shares(psbt: PSBT, input_private_keys: List[Tuple[int, bytes]]) -> None:
@@ -461,7 +377,7 @@ def _add_ecdh_shares(psbt: PSBT, input_private_keys: List[Tuple[int, bytes]]) ->
     combine with the other parties' across successive Signer calls. Shares already in
     the PSBT are left alone so another party's DLEQ proof is never overwritten.
     """
-    scan_keys = _sp_scan_keys(psbt)
+    scan_keys = sp_scan_keys(psbt)
     if not scan_keys or not input_private_keys:
         return
 
@@ -599,7 +515,7 @@ def finalize_sp_inputs(psbt: PSBT) -> PSBT:
     Input Finalizer role: Construct final scriptwitness from signatures
     and prune intermediate fields per BIP-174 (signatures, derivations).
     BIP-375 per-input SP shares (PSBT_IN_SP_ECDH_SHARE / PSBT_IN_SP_DLEQ) are
-    intermediate and pruned once the witness is built.
+    retained so the Extractor can re-verify the output scripts and DLEQ proofs.
 
     Args:
         psbt: PSBT with signatures from Signer
@@ -618,6 +534,9 @@ def finalize_sp_inputs(psbt: PSBT) -> PSBT:
         PSBT_IN_OUTPUT_INDEX,
         PSBT_IN_SEQUENCE,
         PSBT_IN_FINAL_SCRIPTWITNESS,
+        # Retained for the Extractor's BIP-375 re-verification.
+        PSBT_IN_SP_ECDH_SHARE,
+        PSBT_IN_SP_DLEQ,
     }
 
     for input_map in psbt.i:
@@ -663,6 +582,13 @@ def extract_sp_transaction(psbt: PSBT) -> CTransaction:
     """
     if detect_psbt_step(psbt) != PSBTState.FINALIZER:
         raise InvalidStateTransitionError("All inputs must have final scriptwitness before extraction")
+
+    # BIP-375: recompute the silent payment output scripts and verify they are
+    # correct using the ECDH shares and DLEQ proofs, otherwise fail.
+    for check in (validate_ecdh_coverage, validate_output_scripts):
+        ok, msg = check(psbt)
+        if not ok:
+            raise ValueError(f"Extractor verification failed: {msg}")
 
     tx = _build_transaction_from_psbt(psbt)
 
@@ -740,7 +666,7 @@ def _build_transaction_from_psbt(psbt: PSBT) -> "CTransaction":
     return tx
 
 
-def unique_identifier(psbt: PSBT) -> str:
+def transaction_id(psbt: PSBT) -> str:
     """Compute the BIP-375 PSBT unique identifier.
 
     Per BIP-370 "Unique Identification" the id is the txid of an unsigned
@@ -749,8 +675,6 @@ def unique_identifier(psbt: PSBT) -> str:
     until the SP Output Finalizer runs, so the PSBT_OUT_SP_V0_INFO bytes are
     used in place of the output script. This keeps the id stable from the
     Constructor step through the Extractor.
-
-    Reference: compute_unique_id in the bip375-test-generator.
     """
     tx = CTransaction()
     tx.version = _deserialize_psbt_uint32(psbt.g[PSBT_GLOBAL_TX_VERSION])

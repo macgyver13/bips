@@ -9,12 +9,9 @@ input eligibility, and output script correctness.
 import struct
 from typing import Tuple
 
-from deps.bitcoin_test.messages import COutPoint
 from deps.bitcoin_test.psbt import (
     PSBT,
     PSBT_GLOBAL_TX_MODIFIABLE,
-    PSBT_IN_OUTPUT_INDEX,
-    PSBT_IN_PREVIOUS_TXID,
     PSBT_IN_SIGHASH_TYPE,
     PSBT_IN_WITNESS_UTXO,
     PSBT_OUT_SCRIPT,
@@ -22,12 +19,13 @@ from deps.bitcoin_test.psbt import (
 from deps.dleq import dleq_verify_proof
 from secp256k1lab.secp256k1 import GE
 
-from .bip352_crypto import compute_silent_payment_output_script
+from .bip352_crypto import derive_sp_output_scripts
 from .inputs import (
     collect_input_ecdh_and_pubkey,
     is_input_eligible,
     parse_witness_utxo,
     pubkey_from_eligible_input,
+    sp_scan_keys,
 )
 from .psbt_bip375 import (
     PSBT_GLOBAL_SP_ECDH_SHARE,
@@ -141,11 +139,7 @@ def validate_ecdh_coverage(psbt: PSBT) -> Tuple[bool, str]:
     - DLEQ proofs must verify correctly
     """
     # Collect unique scan keys from SP outputs
-    scan_keys = set()
-    for output_map in psbt.o:
-        if PSBT_OUT_SP_V0_INFO in output_map:
-            sp_info = output_map[PSBT_OUT_SP_V0_INFO]
-            scan_keys.add(sp_info[:33])
+    scan_keys = sp_scan_keys(psbt)
 
     if not scan_keys:
         return True, None  # No SP outputs, nothing to check
@@ -295,55 +289,20 @@ def validate_output_scripts(psbt: PSBT) -> Tuple[bool, str]:
     - k values are tracked per scan key and incremented for each SP output sharing
       the same scan key (outputs with different scan keys use independent k counters)
     """
-    # Build outpoints list
-    outpoints = []
-    for input_map in psbt.i:
-        if PSBT_IN_PREVIOUS_TXID in input_map and PSBT_IN_OUTPUT_INDEX in input_map:
-            output_index_bytes = input_map.get(PSBT_IN_OUTPUT_INDEX)
-            txid_int = int.from_bytes(input_map[PSBT_IN_PREVIOUS_TXID], "little")
-            output_index = struct.unpack("<I", output_index_bytes)[0]
-            outpoints.append(COutPoint(txid_int, output_index))
-
-    # Collect SP outputs and sort by (sp_info, output_idx) so k is assigned in
-    # lexicographic silent payment code order
-    sp_outputs = [
-        (output_map[PSBT_OUT_SP_V0_INFO], output_idx, output_map)
-        for output_idx, output_map in enumerate(psbt.o)
-        if PSBT_OUT_SP_V0_INFO in output_map
-    ]
-    sp_outputs.sort(key=lambda entry: (entry[0], entry[1]))
-
-    # Track k values per scan key
-    scan_key_k_values = {}
-
-    for sp_info, output_idx, output_map in sp_outputs:
-        scan_pubkey_bytes = sp_info[:33]
-        spend_pubkey_bytes = sp_info[33:]
-
-        k = scan_key_k_values.get(scan_pubkey_bytes, 0)
-
-        # Get ECDH share and summed pubkey
-        ecdh_share_bytes, summed_pubkey_bytes = collect_input_ecdh_and_pubkey(
-            psbt, scan_pubkey_bytes
-        )
-
-        if ecdh_share_bytes and summed_pubkey_bytes and outpoints:
-            computed_script = compute_silent_payment_output_script(
-                outpoints, summed_pubkey_bytes, ecdh_share_bytes, spend_pubkey_bytes, k
-            )
-
+    for output_idx, output_map, computed_script in derive_sp_output_scripts(psbt):
+        if computed_script is None:
             if PSBT_OUT_SCRIPT in output_map:
-                actual_script = output_map[PSBT_OUT_SCRIPT]
-                if actual_script != computed_script:
-                    return (
-                        False,
-                        f"Output {output_idx} script doesn't match silent payments derivation",
-                    )
+                return (
+                    False,
+                    f"Output {output_idx} has PSBT_OUT_SCRIPT but missing ECDH share or input pubkeys",
+                )
+            continue
 
-            scan_key_k_values[scan_pubkey_bytes] = k + 1
-        elif PSBT_OUT_SCRIPT in output_map:
-            return (
-                False,
-                f"Output {output_idx} has PSBT_OUT_SCRIPT but missing ECDH share or input pubkeys",
-            )
+        if PSBT_OUT_SCRIPT in output_map:
+            actual_script = output_map[PSBT_OUT_SCRIPT]
+            if actual_script != computed_script:
+                return (
+                    False,
+                    f"Output {output_idx} script doesn't match silent payments derivation",
+                )
     return True, None

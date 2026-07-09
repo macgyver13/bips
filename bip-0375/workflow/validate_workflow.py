@@ -34,21 +34,8 @@ from validator.psbt_bip375 import (
     PSBT_GLOBAL_SP_DLEQ,
     PSBT_IN_SP_DLEQ,
 )
-from deps.bitcoin_test.psbt import (
-    PSBT_IN_WITNESS_UTXO,
-    PSBT_IN_PARTIAL_SIG,
-)
-from deps.bitcoin_test.signing import ECPubKey
-from deps.bitcoin_test.sighash import SegwitV0SignatureHash, make_p2wpkh_script_code, SIGHASH_ALL
-from deps.bitcoin_test.transaction import CTxOut
-from deps.bitcoin_test.utils import is_p2wpkh, from_binary
-from workflow.roles import _build_transaction_from_psbt, unique_identifier
+from workflow.roles import transaction_id
 from test_runner import validate_bip375_psbt
-
-
-def _split_sp_v0_info(info_hex: str) -> tuple[bytes, bytes]:
-    info = bytes.fromhex(info_hex)
-    return info[:33], info[33:66]
 
 
 def _step_create(_psbt: PSBT | None, _supplementary: dict) -> PSBT:
@@ -73,7 +60,8 @@ def _step_construct(_psbt: PSBT | None, supplementary: dict) -> PSBT:
     sp_outputs, regular_outputs = [], []
     for o in supplementary["outputs"]:
         if "sp_v0_info" in o:
-            scan_key, spend_key = _split_sp_v0_info(o["sp_v0_info"])
+            sp_info = bytes.fromhex(o["sp_v0_info"])
+            scan_key, spend_key = sp_info[:33], sp_info[33:66]
             sp_outputs.append(
                 {"scan_key": scan_key, "spend_key": spend_key, "amount": o["amount"]}
             )
@@ -132,12 +120,17 @@ def _step_finalize(psbt: PSBT | None, _supplementary: dict) -> PSBT:
     return finalize_sp_inputs(psbt)
 
 
+def _step_extract(psbt: PSBT | None, _supplementary: dict):
+    return extract_sp_transaction(psbt)
+
+
 STEP_DISPATCH = {
     "create": _step_create,
     "construct": _step_construct,
     "update": _step_update,
     "sign": _step_sign,
     "finalize": _step_finalize,
+    "extract": _step_extract,
 }
 
 
@@ -179,98 +172,73 @@ def _map_field_diffs(got_psbt: PSBT, exp_psbt: PSBT) -> list:
     return diffs
 
 
-def _strip_partial_sigs(psbt: PSBT) -> list[list[tuple[bytes, bytes]]]:
-    """Remove PSBT_IN_PARTIAL_SIG entries from each input map, returning what was removed.
+def _valid_transaction_id(psbt: PSBT, expected: dict) -> str | None:
+    """Validate the BIP-375 unique identifier invariant for a step.
 
-    Returned shape: [[(pubkey, sig), ...] per input].
+    Every step of a workflow carries the same `expected.transaction_id`, so checking
+    each step's resulting PSBT against it confirms no role alters transaction
+    identity. Steps without `transaction_id` (the `create` step) are skipped.
     """
-    removed = []
-    for input_map in psbt.i:
-        sigs = input_map.get_all_by_type(PSBT_IN_PARTIAL_SIG)
-        for pubkey, _sig in sigs:
-            del input_map.map[bytes([PSBT_IN_PARTIAL_SIG]) + pubkey]
-        removed.append(sigs)
-    return removed
+    exp_uid = expected.get("transaction_id")
+    if exp_uid is None:
+        return None
+    got = transaction_id(psbt)
+    if got != exp_uid:
+        return f"transaction_id mismatch — got {got} expected {exp_uid}"
+    return None
 
 
-def _signed_pubkeys(sigs: list[tuple[bytes, bytes]]) -> set[bytes]:
-    return {pubkey for pubkey, _sig in sigs}
+def _state_ok(detected, expected_state, is_valid: bool, msg: str, task: str) -> bool:
+    """Confirm the produced PSBT lands in the expected step and passes BIP-375
+    validation. Values are precomputed by the caller because _compare_signed_step
+    mutates the PSBT before this check runs."""
+    if detected == expected_state and is_valid:
+        return True
+    print(f"  {task}: FAILED — map fields match but state/validation off")
+    if detected != expected_state:
+        print(f"    detected step={detected.value}, expected={task}")
+    if not is_valid:
+        print(f"    validation: {msg}")
+    return False
 
 
-def _compare_signed_step(got_psbt: PSBT, exp_bytes: bytes) -> bool:
-    """For the `signed` step, ECDSA signature bytes are non-deterministic across
-    RFC6979 implementations (Python vs rust-secp256k1). Strip PSBT_IN_PARTIAL_SIG
-    from both sides, compare the remaining map fields, assert the same pubkeys
-    are signed per input, and verify each got signature.
-    """
-    exp_psbt = PSBT.from_base64(base64.b64encode(exp_bytes).decode())
-    got_sigs = _strip_partial_sigs(got_psbt)
-    exp_sigs = _strip_partial_sigs(exp_psbt)
+def _compare_extract(result, expected: dict, task: str, verbose: bool) -> bool:
+    """The Extractor's artifact is a raw transaction, compared to expected.tx."""
+    got_tx = result.serialize().hex()
+    if got_tx == expected["tx"]:
+        return True
+    print(f"  {task}: FAILED — extracted tx differs")
+    if verbose:
+        print(f"    got:      {got_tx}")
+        print(f"    expected: {expected['tx']}")
+    return False
 
-    if len(got_sigs) != len(exp_sigs):
-        print(
-            "  signed: FAILED - input signature list length differs: "
-            f"got {len(got_sigs)} expected {len(exp_sigs)}"
-        )
-        return False
 
-    for idx, (got_input_sigs, exp_input_sigs) in enumerate(zip(got_sigs, exp_sigs)):
-        got_pubkeys = _signed_pubkeys(got_input_sigs)
-        exp_pubkeys = _signed_pubkeys(exp_input_sigs)
-        if got_pubkeys != exp_pubkeys:
-            print(f"  signed: FAILED - input {idx} signed pubkeys differ")
-            print(f"    got:      {[pubkey.hex() for pubkey in sorted(got_pubkeys)]}")
-            print(f"    expected: {[pubkey.hex() for pubkey in sorted(exp_pubkeys)]}")
-            return False
-
-    diffs = _map_field_diffs(got_psbt, exp_psbt)
+def _compare_psbt(result: PSBT, expected: dict, task: str, verbose: bool) -> bool:
+    """Compare a produced PSBT to expected.psbt field-by-field, then confirm its
+    step and BIP-375 validity."""
+    detected = detect_psbt_step(result)
+    expected_state = PSBTState(task)
+    is_valid, msg = validate_bip375_psbt(
+        base64.b64encode(result.serialize()).decode(), checks=None
+    )
+    diffs = _map_field_diffs(result, PSBT.from_base64(expected["psbt"]))
     if diffs:
-        print("  signed: FAILED — non-signature map fields differ:")
+        print(f"  {task}: FAILED — map fields differ:")
         for d in diffs:
             print(f"    {d}")
         return False
-
-    tx = _build_transaction_from_psbt(got_psbt)
-    for idx, sigs in enumerate(got_sigs):
-        if not sigs:
-            continue
-        input_map = got_psbt.i[idx]
-        witness_utxo = input_map.get(PSBT_IN_WITNESS_UTXO)
-        if not witness_utxo:
-            print(f"  signed: FAILED — input {idx} missing witness UTXO, cannot verify")
-            return False
-        utxo = from_binary(CTxOut, witness_utxo)
-        if not is_p2wpkh(utxo.scriptPubKey):
-            print(f"  signed: FAILED — input {idx} not P2WPKH (verifier only handles P2WPKH)")
-            return False
-        script_code = make_p2wpkh_script_code(utxo.scriptPubKey[2:])
-        sighash = SegwitV0SignatureHash(script_code, tx, idx, SIGHASH_ALL, utxo.nValue)
-        for pubkey, sig in sigs:
-            if not sig or sig[-1] != SIGHASH_ALL:
-                print(f"  signed: FAILED — input {idx} sig has bad sighash byte")
-                return False
-            pk = ECPubKey()
-            pk.set(pubkey)
-            if not pk.verify_ecdsa(sig[:-1], sighash):
-                print(f"  signed: FAILED — input {idx} signature does not verify")
-                return False
-    return True
+    return _state_ok(detected, expected_state, is_valid, msg, task)
 
 
-def _unique_id_error(psbt: PSBT, expected: dict) -> str | None:
-    """Validate the BIP-375 unique identifier invariant for a step.
-
-    Every step of a workflow carries the same `expected.unique_id`, so checking
-    each step's resulting PSBT against it confirms no role alters transaction
-    identity. Steps without `unique_id` (the `create` step) are skipped.
-    """
-    exp_uid = expected.get("unique_id")
-    if exp_uid is None:
-        return None
-    got = unique_identifier(psbt)
-    if got != exp_uid:
-        return f"unique_id mismatch — got {got} expected {exp_uid}"
-    return None
+_COMPARE = {
+    "create": _compare_psbt,
+    "construct": _compare_psbt,
+    "update": _compare_psbt,
+    "sign": _compare_psbt,
+    "finalize": _compare_psbt,
+    "extract": _compare_extract,
+}
 
 
 def _run_step(entry: dict, verbose: bool) -> bool:
@@ -280,68 +248,22 @@ def _run_step(entry: dict, verbose: bool) -> bool:
         expected = entry["expected"]
         supplementary = entry.get("supplementary", {})
         task = supplementary["task"]
-        psbt = None if task == "create" else PSBT.from_base64(entry["psbt"])
+        psbt_in = None if task == "create" else PSBT.from_base64(entry["psbt"])
 
-        # The Extractor leaves the PSBT untouched, so it is checked against the raw
-        # transaction rather than an expected PSBT.
-        if task == "extract":
-            uid_err = _unique_id_error(psbt, expected)
-            if uid_err:
-                print(f"  {task}: FAILED — {uid_err}")
-                return False
-            got_tx = extract_sp_transaction(psbt).serialize().hex()
-            if got_tx == expected["tx"]:
-                print(f"  {task}: PASSED ({description})")
-                return True
-            print(f"  {task}: FAILED — extracted tx differs")
-            if verbose:
-                print(f"    got:      {got_tx}")
-                print(f"    expected: {expected['tx']}")
+        result = STEP_DISPATCH[task](psbt_in, supplementary)
+
+        # extract yields a raw tx, so its identity lives on the incoming psbt;
+        # every other step proves the role preserved identity in its output.
+        identity_psbt = psbt_in if task == "extract" else result
+        txid_err = _valid_transaction_id(identity_psbt, expected)
+        if txid_err:
+            print(f"  {task}: FAILED — {txid_err}")
             return False
 
-        psbt = STEP_DISPATCH[task](psbt, supplementary)
-
-        uid_err = _unique_id_error(psbt, expected)
-        if uid_err:
-            print(f"  {task}: FAILED — {uid_err}")
+        if not _COMPARE[task](result, expected, task, verbose):
             return False
-
-        detected = detect_psbt_step(psbt)
-        expected_state = PSBTState(task)
-        # The Finalizer prunes the PSBT_IN_* fields the BIP-375 checks need, so its
-        # result cannot be validated; assume valid.
-        if task == "finalize":
-            is_valid, msg = True, None
-        else:
-            is_valid, msg = validate_bip375_psbt(
-                base64.b64encode(psbt.serialize()).decode(), checks=None
-            )
-
-        # ECDSA partial sigs are non-deterministic, so a signed PSBT is compared with
-        # the signatures stripped and separately verified. A deferred sign step (share
-        # added, output scripts not yet computable, nothing signed) has no such fields
-        # and compares directly. _compare_signed_step mutates psbt, so it runs last.
-        has_sigs = any(inp.get_all_by_type(PSBT_IN_PARTIAL_SIG) for inp in psbt.i)
-        if task == "sign" and has_sigs:
-            if not _compare_signed_step(psbt, base64.b64decode(expected["psbt"])):
-                return False
-        else:
-            diffs = _map_field_diffs(psbt, PSBT.from_base64(expected["psbt"]))
-            if diffs:
-                print(f"  {task}: FAILED — map fields differ:")
-                for d in diffs:
-                    print(f"    {d}")
-                return False
-
-        if detected == expected_state and is_valid:
-            print(f"  {task}: PASSED ({description})")
-            return True
-        print(f"  {task}: FAILED — map fields match but state/validation off")
-        if detected != expected_state:
-            print(f"    detected step={detected.value}, expected={task}")
-        if not is_valid:
-            print(f"    validation: {msg}")
-        return False
+        print(f"  {task}: PASSED ({description})")
+        return True
 
     except Exception as e:
         print(f"  {task}: ERROR — {e}")

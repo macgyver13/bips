@@ -28,6 +28,7 @@ from bitcoin_test.psbt import (
     PSBT_IN_PARTIAL_SIG,
     PSBT_IN_TAP_KEY_SIG,
     PSBT_IN_FINAL_SCRIPTWITNESS,
+    PSBT_IN_FINAL_SCRIPTSIG,
     PSBT_OUT_AMOUNT,
     PSBT_OUT_SCRIPT,
     PSBT_OUT_BIP32_DERIVATION,
@@ -510,6 +511,17 @@ def sign_sp_psbt(
 # Role 5: Input Finalizer
 # =============================================================================
 
+def _build_legacy_scriptsig(sig: bytes, pubkey: bytes) -> bytes:
+    """Build a legacy P2PKH scriptSig: push(sig) push(pubkey).
+
+    sig and pubkey are always shorter than 76 bytes, so a single-byte push
+    opcode (the length) is sufficient.
+    TODO: extend for P2SH 2-of-2 multisig (OP_0 <sigs...> push(redeemScript))
+    once the deferred P2SH finalize vectors are enabled.
+    """
+    return bytes([len(sig)]) + sig + bytes([len(pubkey)]) + pubkey
+
+
 def finalize_sp_inputs(psbt: PSBT) -> PSBT:
     """
     Input Finalizer role: Construct final scriptwitness from signatures
@@ -534,21 +546,26 @@ def finalize_sp_inputs(psbt: PSBT) -> PSBT:
         PSBT_IN_OUTPUT_INDEX,
         PSBT_IN_SEQUENCE,
         PSBT_IN_FINAL_SCRIPTWITNESS,
+        PSBT_IN_FINAL_SCRIPTSIG,
         # Retained for the Extractor's BIP-375 re-verification.
         PSBT_IN_SP_ECDH_SHARE,
         PSBT_IN_SP_DLEQ,
     }
 
     for input_map in psbt.i:
-        # Check for P2WPKH partial signature
+        # Check for a partial signature (P2WPKH witness or legacy P2PKH scriptSig)
         partial_sigs = input_map.get_all_by_type(PSBT_IN_PARTIAL_SIG)
         if partial_sigs:
             pubkey, sig = partial_sigs[0]
-            # P2WPKH witness: <sig> <pubkey>
-            witness = bytes([2])  # witness stack count
-            witness += bytes([len(sig)]) + sig
-            witness += bytes([len(pubkey)]) + pubkey
-            input_map[PSBT_IN_FINAL_SCRIPTWITNESS] = witness
+            if PSBT_IN_WITNESS_UTXO in input_map.map:
+                # P2WPKH witness: <sig> <pubkey>
+                witness = bytes([2])  # witness stack count
+                witness += bytes([len(sig)]) + sig
+                witness += bytes([len(pubkey)]) + pubkey
+                input_map[PSBT_IN_FINAL_SCRIPTWITNESS] = witness
+            else:
+                # Legacy P2PKH scriptSig: push(sig) push(pubkey)
+                input_map[PSBT_IN_FINAL_SCRIPTSIG] = _build_legacy_scriptsig(sig, pubkey)
         else:
             # Check for P2TR key path signature
             tap_key_sig = input_map.get(PSBT_IN_TAP_KEY_SIG)

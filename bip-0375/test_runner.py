@@ -74,7 +74,13 @@ def load_test_vectors(filename: str) -> dict:
 
 
 def run_invalid_tests(test_data: dict, verbosity: int = 0) -> tuple[int, int]:
-    """Run the `invalid` section (each PSBT should fail validation)"""
+    """Run the `invalid` section (each PSBT should fail validation).
+
+    The `task` tag pins the highest pipeline step that should still pass:
+    `fail_deserialize` must be rejected at the structural gate, while `fail_sign`
+    must deserialize into a structurally valid PSBT and only fail a later,
+    signing-stage check.
+    """
     passed = 0
     failed = 0
 
@@ -84,42 +90,42 @@ def run_invalid_tests(test_data: dict, verbosity: int = 0) -> tuple[int, int]:
         is_valid, result = validate_bip375_psbt(
             test_vector["psbt"], test_vector.get("checks"), debug=verbosity >= 2
         )
+        task = test_vector.get("supplementary", {}).get("task")
+        struct_ok, _ = validate_psbt_structure(BIP375PSBT.from_base64(test_vector["psbt"]))
+
+        # Task-based gate: fail_deserialize fails structure; fail_sign passes it.
+        if task == "fail_deserialize":
+            gate_ok = not struct_ok
+        elif task == "fail_sign":
+            gate_ok = struct_ok
+        else:
+            gate_ok = True
+
         print(f"{test_vector['description']}")
-        if not is_valid:
+        if not is_valid and gate_ok:
             passed += 1
             if verbosity >= 1:
                 print(f"  {result}")
         else:
             failed += 1
-            if result:
+            if is_valid and result:
                 print(f"  ERROR: {result}")
+            if not gate_ok:
+                print(f"  ERROR: task '{task}' expects structure check to "
+                      f"{'fail' if task == 'fail_deserialize' else 'pass'}, but it "
+                      f"{'passed' if struct_ok else 'failed'}")
 
     return passed, failed
 
 
 def run_valid_tests(test_data: dict, verbosity: int = 0) -> tuple[int, int]:
-    """Run the `valid` section (each PSBT should pass validation)"""
-    passed = 0
-    failed = 0
+    """Run the `valid` section stepwise: validate the incoming PSBT, then drive
+    the role named by supplementary.task and match the result to expected.psbt."""
+    # Imported here to keep the module-level import direction one-way:
+    # workflow.validate_workflow imports validate_bip375_psbt from this module.
+    from workflow.validate_workflow import run_valid_stepwise
 
-    valid_tests = test_data.get("valid", [])
-    print(f"Valid PSBTs: {len(valid_tests)}")
-    for test_vector in valid_tests:
-        is_valid, result = validate_bip375_psbt(
-            test_vector["psbt"], test_vector.get("checks"), debug=verbosity >= 2
-        )
-
-        print(f"{test_vector['description']}")
-        if is_valid:
-            passed += 1
-            if verbosity >= 1:
-                print(f"  {result}")
-        else:
-            failed += 1
-            if result:
-                print(f"  ERROR: {result}")
-
-    return passed, failed
+    return run_valid_stepwise(test_data.get("valid", []), verbose=verbosity >= 1)
 
 
 def main():

@@ -115,16 +115,6 @@ def validate_psbt_structure(psbt: PSBT) -> Tuple[bool, str]:
                     False,
                     f"Input {i} DLEQ proof has wrong length ({len(dleq_proof)} bytes, expected 64)",
                 )
-
-    # Check TX_MODIFIABLE flag when PSBT_OUT_SCRIPT is set
-    for output_map in psbt.o:
-        if PSBT_OUT_SP_V0_INFO in output_map and PSBT_OUT_SCRIPT in output_map:
-            if len(output_map.get(PSBT_OUT_SCRIPT, b"")) > 0:
-                if psbt.g.get(PSBT_GLOBAL_TX_MODIFIABLE) != b"\x00":
-                    return (
-                        False,
-                        "PSBT_OUT_SCRIPT set for silent payments output but PSBT_GLOBAL_TX_MODIFIABLE not zeroed",
-                    )
     return True, None
 
 
@@ -288,7 +278,18 @@ def validate_output_scripts(psbt: PSBT) -> Tuple[bool, str]:
       script from the ECDH share and input public keys and verifies it matches
     - k values are tracked per scan key and incremented for each SP output sharing
       the same scan key (outputs with different scan keys use independent k counters)
+    - Once an SP output script is committed, PSBT_GLOBAL_TX_MODIFIABLE must be
+      zeroed (a signer-time invariant, so it is checked here rather than in the
+      structural pass)
     """
+    for output_map in psbt.o:
+        if PSBT_OUT_SP_V0_INFO in output_map and len(output_map.get(PSBT_OUT_SCRIPT, b"")) > 0:
+            if psbt.g.get(PSBT_GLOBAL_TX_MODIFIABLE) != b"\x00":
+                return (
+                    False,
+                    "PSBT_OUT_SCRIPT set for silent payments output but PSBT_GLOBAL_TX_MODIFIABLE not zeroed",
+                )
+
     for output_idx, output_map, computed_script in derive_sp_output_scripts(psbt):
         if computed_script is None:
             if PSBT_OUT_SCRIPT in output_map:

@@ -50,7 +50,6 @@ def validate_psbt_structure(psbt: PSBT) -> Tuple[bool, str]:
     - SP_V0_INFO must be 66 bytes (33-byte scan key + 33-byte spend key)
     - ECDH shares must be 33 bytes
     - DLEQ proofs must be 64 bytes
-    - TX_MODIFIABLE is zero when PSBT_OUT_SCRIPT set for SP output
     """
     # Check output requirements
     for i, output_map in enumerate(psbt.o):
@@ -128,15 +127,6 @@ def validate_psbt_structure(psbt: PSBT) -> Tuple[bool, str]:
                     f"Input {i} DLEQ proof has wrong length ({len(dleq_proof)} bytes, expected 64)",
                 )
 
-    # Check TX_MODIFIABLE flag when PSBT_OUT_SCRIPT is set
-    for output_map in psbt.o:
-        if PSBT_OUT_SP_V0_INFO in output_map and PSBT_OUT_SCRIPT in output_map:
-            if len(output_map.get(PSBT_OUT_SCRIPT, b"")) > 0:
-                if psbt.g.get(PSBT_GLOBAL_TX_MODIFIABLE) != b"\x00":
-                    return (
-                        False,
-                        "PSBT_OUT_SCRIPT set for silent payments output but PSBT_GLOBAL_TX_MODIFIABLE not zeroed",
-                    )
     return True, None
 
 
@@ -276,6 +266,8 @@ def validate_input_eligibility(psbt: PSBT) -> Tuple[bool, str]:
     Checks:
     - No segwit v>1 inputs when SP outputs present
     - SIGHASH_ALL required when SP outputs present
+    - TX_MODIFIABLE Inputs/Outputs Modifiable flags are cleared once PSBT_OUT_SCRIPT
+      is set for an SP output
     """
     # Check if SP outputs exist
     has_sp_outputs = any(PSBT_OUT_SP_V0_INFO in om for om in psbt.o)
@@ -301,6 +293,22 @@ def validate_input_eligibility(psbt: PSBT) -> Tuple[bool, str]:
                         False,
                         f"Input {i} uses non-SIGHASH_ALL ({sighash_type}) with silent payments",
                     )
+
+    tx_modifiable = psbt.g.get(PSBT_GLOBAL_TX_MODIFIABLE)
+    flags = tx_modifiable[0] if tx_modifiable else 0
+
+    # Inputs/Outputs Modifiable must be False once PSBT_OUT_SCRIPT is set for an SP output
+    if flags & 0x03:
+        for i, output_map in enumerate(psbt.o):
+            if (
+                PSBT_OUT_SP_V0_INFO in output_map
+                and len(output_map.get(PSBT_OUT_SCRIPT, b"")) > 0
+            ):
+                return (
+                    False,
+                    f"Output {i} has PSBT_OUT_SCRIPT set for silent payments output but "
+                    "PSBT_GLOBAL_TX_MODIFIABLE Inputs/Outputs Modifiable flags not cleared",
+                )
     return True, None
 
 

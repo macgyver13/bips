@@ -14,9 +14,11 @@ from deps.bitcoin_test.psbt import (
     PSBT_IN_OUTPUT_INDEX,
     PSBT_IN_REDEEM_SCRIPT,
     PSBT_IN_TAP_INTERNAL_KEY,
+    PSBT_IN_TAP_MERKLE_ROOT,
     PSBT_IN_WITNESS_UTXO,
 )
-from secp256k1lab.secp256k1 import GE
+from secp256k1lab.secp256k1 import G, GE
+from secp256k1lab.util import tagged_hash
 
 from .psbt_bip375 import BIP375PSBTMap, PSBT_GLOBAL_SP_ECDH_SHARE, PSBT_IN_SP_ECDH_SHARE
 
@@ -165,8 +167,15 @@ def is_input_eligible(input_map: BIP375PSBTMap) -> bool:
         "50929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac0"
     )
     if _is_p2tr(script_pubkey):
+        # The internal key and merkle root are unauthenticated: a NUMS claim only
+        # makes the input ineligible if it reproduces the scriptPubKey
         tap_internal_key = input_map.get(PSBT_IN_TAP_INTERNAL_KEY)
-        if tap_internal_key == NUMS_H:
+        merkle_root = input_map.get(PSBT_IN_TAP_MERKLE_ROOT)
+        if (
+            tap_internal_key == NUMS_H
+            and merkle_root is not None
+            and _taproot_output_key(NUMS_H, merkle_root) == script_pubkey[2:34]
+        ):
             return False
 
     if _is_p2sh(script_pubkey):
@@ -177,6 +186,12 @@ def is_input_eligible(input_map: BIP375PSBTMap) -> bool:
         else:
             assert False
     return True
+
+
+def _taproot_output_key(internal_key: bytes, merkle_root: bytes) -> bytes:
+    """BIP-341 x-only output key for an internal key and script tree merkle root"""
+    tweak = int.from_bytes(tagged_hash("TapTweak", internal_key + merkle_root), "big")
+    return (GE.lift_x(int.from_bytes(internal_key, "big")) + tweak * G).to_bytes_xonly()
 
 
 def _has_eligible_script_type(script_pubkey: bytes) -> bool:

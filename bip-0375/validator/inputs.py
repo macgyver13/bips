@@ -6,7 +6,7 @@ PSBT input utility functions
 import struct
 from typing import Optional, Tuple
 
-from deps.bitcoin_test.messages import CTransaction, CTxOut, from_binary
+from deps.bitcoin_test.messages import CTransaction, CTxOut, from_binary, hash160
 from deps.bitcoin_test.psbt import (
     PSBT,
     PSBT_IN_BIP32_DERIVATION,
@@ -76,18 +76,36 @@ def pubkey_from_eligible_input(input_map: BIP375PSBTMap) -> Optional[GE]:
     if not is_input_eligible(input_map):
         return None
 
-    # Try BIP32 derivation first (key_data is the pubkey)
-    derivations = input_map.get_all_by_type(PSBT_IN_BIP32_DERIVATION)
-    if derivations:
-        pubkey, _ = derivations[0]
-        if len(pubkey) == 33:
-            return GE.from_bytes(pubkey)
+    script_pubkey = _script_pubkey_from_psbt_input(input_map)
+    if _is_p2tr(script_pubkey):
+        return GE.from_bytes(bytes([0x02]) + script_pubkey[2:34])
 
-    # Try PSBT_IN_WITNESS_UTXO for P2TR inputs
-    spk = parse_witness_utxo(input_map[PSBT_IN_WITNESS_UTXO])
-    if spk and _is_p2tr(spk):
-        return GE.from_bytes(bytes([0x02]) + spk[2:34])
+    # An input may carry several BIP32 derivations, and none of them is
+    # authenticated: use the one whose pubkey the prevout script commits to
+    for pubkey, _ in input_map.get_all_by_type(PSBT_IN_BIP32_DERIVATION):
+        if len(pubkey) == 33 and _script_commits_to_pubkey(
+            input_map, script_pubkey, pubkey
+        ):
+            return GE.from_bytes(pubkey)
     return None
+
+
+def _script_commits_to_pubkey(
+    input_map: BIP375PSBTMap, script_pubkey: bytes, pubkey: bytes
+) -> bool:
+    """True if the P2PKH, P2WPKH or P2SH-P2WPKH scriptPubKey commits to pubkey"""
+    pubkey_hash = hash160(pubkey)
+    if _is_p2pkh(script_pubkey):
+        return script_pubkey[3:23] == pubkey_hash
+    if _is_p2wpkh(script_pubkey):
+        return script_pubkey[2:22] == pubkey_hash
+    if _is_p2sh(script_pubkey):
+        redeem_script = input_map.get(PSBT_IN_REDEEM_SCRIPT)
+        return (
+            redeem_script == bytes([0x00, 0x14]) + pubkey_hash
+            and script_pubkey[2:22] == hash160(redeem_script)
+        )
+    return False
 
 
 # ============================================================================

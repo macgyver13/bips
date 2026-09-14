@@ -24,6 +24,8 @@ from secp256k1lab.secp256k1 import GE
 
 from .bip352_crypto import compute_silent_payment_output_script
 from .inputs import (
+    _is_p2tr,
+    _script_pubkey_from_psbt_input,
     collect_input_ecdh_and_pubkey,
     is_input_eligible,
     parse_witness_utxo,
@@ -283,12 +285,16 @@ def validate_input_eligibility(psbt: PSBT) -> Tuple[bool, str]:
                 return False, f"Input {i} uses segwit version > 1 with silent payments"
 
     # Check SIGHASH_ALL requirement - PSBT_IN_SIGHASH_TYPE is optional, but if set it must be SIGHASH_ALL when SP outputs are present
+    # Taproot inputs may use SIGHASH_DEFAULT (0), which BIP-341 defines as equivalent to SIGHASH_ALL
     for i, input_map in enumerate(psbt.i):
         if PSBT_IN_SIGHASH_TYPE in input_map:
             sighash = input_map[PSBT_IN_SIGHASH_TYPE]
             if len(sighash) >= 4:
                 sighash_type = struct.unpack("<I", sighash[:4])[0]
-                if sighash_type != 1:  # SIGHASH_ALL
+                if sighash_type != 1 and not (  # SIGHASH_ALL
+                    sighash_type == 0  # SIGHASH_DEFAULT
+                    and _is_p2tr(_script_pubkey_from_psbt_input(input_map) or b"")
+                ):
                     return (
                         False,
                         f"Input {i} uses non-SIGHASH_ALL ({sighash_type}) with silent payments",

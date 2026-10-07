@@ -185,36 +185,39 @@ def validate_ecdh_coverage(psbt: PSBT) -> Tuple[bool, str]:
             if not valid:
                 return False, f"Global DLEQ proof invalid: {msg}"
 
-        # Verify per-input coverage for eligible inputs
-        if scan_key_has_computed_output and not has_global_ecdh:
-            for i, input_map in enumerate(psbt.i):
-                if not is_input_eligible(input_map):
-                    continue
-                ecdh_share = input_map.get_by_key(PSBT_IN_SP_ECDH_SHARE, scan_key)
-                if not ecdh_share:
+        # Verify the DLEQ proof of every per-input share present, whether or not the
+        # output scripts are set yet: a Signer relies on them before it computes
+        # the scripts. Coverage of every eligible input is only required once an
+        # output script is set without a global share.
+        require_coverage = scan_key_has_computed_output and not has_global_ecdh
+        for i, input_map in enumerate(psbt.i):
+            ecdh_share = input_map.get_by_key(PSBT_IN_SP_ECDH_SHARE, scan_key)
+            if not ecdh_share:
+                # An input with no share has nothing to verify, and may not carry
+                # its UTXO yet, so check its eligibility only if coverage is required
+                if require_coverage and is_input_eligible(input_map):
                     return (
                         False,
                         f"Output script set but eligible input {i} missing ECDH share",
                     )
-                else:
-                    # Verify per-input DLEQ proofs
-                    dleq_proof = input_map.get_by_key(PSBT_IN_SP_DLEQ, scan_key)
-                    if not dleq_proof:
-                        return False, f"Input {i} ECDH share missing DLEQ proof"
+                continue
+            if not is_input_eligible(input_map):
+                continue
 
-                    # Get input public key A
-                    A = pubkey_from_eligible_input(input_map)
-                    if A is None:
-                        return (
-                            False,
-                            f"Input {i} missing public key for DLEQ verification",
-                        )
+            dleq_proof = input_map.get_by_key(PSBT_IN_SP_DLEQ, scan_key)
+            if not dleq_proof:
+                return False, f"Input {i} ECDH share missing DLEQ proof"
 
-                    valid, msg = validate_dleq_proof(
-                        A, scan_key, ecdh_share, dleq_proof
-                    )
-                    if not valid:
-                        return False, f"Input {i} DLEQ proof invalid: {msg}"
+            A = pubkey_from_eligible_input(input_map)
+            if A is None:
+                return (
+                    False,
+                    f"Input {i} missing public key for DLEQ verification",
+                )
+
+            valid, msg = validate_dleq_proof(A, scan_key, ecdh_share, dleq_proof)
+            if not valid:
+                return False, f"Input {i} DLEQ proof invalid: {msg}"
     return True, None
 
 

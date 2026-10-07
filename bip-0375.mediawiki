@@ -436,6 +436,7 @@ Use the provided [[bip-0375/test_runner.py|test runner]] to validate each test v
 ** Treat a P2TR input as NUMS-ineligible only when PSBT_IN_TAP_INTERNAL_KEY and PSBT_IN_TAP_MERKLE_ROOT reproduce the output key.
 ** Treat an omitted PSBT_GLOBAL_TX_MODIFIABLE as zero, check only the Inputs Modifiable and Outputs Modifiable flags, and move the check to Input Eligibility.
 ** Add test vectors for the above (v1.2.2).
+** Verify every per-input DLEQ proof present, not only once PSBT_OUT_SCRIPT is set.
 * '''0.1.3''' (2026-09-29):
 ** Correct labeled test vectors and reference: include labeled-spend key in PSBT_OUT_SP_V0_INFO.
 * '''0.1.2''' (2026-09-27):

@@ -4,12 +4,21 @@ PSBT input utility functions
 """
 
 import struct
+from io import BytesIO
 from typing import Optional, Tuple
 
-from deps.bitcoin_test.messages import COutPoint, CTransaction, CTxOut, from_binary
+from deps.bitcoin_test.messages import (
+    COutPoint,
+    CTransaction,
+    CTxOut,
+    deser_string_vector,
+    from_binary,
+)
 from deps.bitcoin_test.psbt import (
     PSBT,
     PSBT_IN_BIP32_DERIVATION,
+    PSBT_IN_FINAL_SCRIPTSIG,
+    PSBT_IN_FINAL_SCRIPTWITNESS,
     PSBT_IN_NON_WITNESS_UTXO,
     PSBT_IN_OUTPUT_INDEX,
     PSBT_IN_PREVIOUS_TXID,
@@ -18,6 +27,7 @@ from deps.bitcoin_test.psbt import (
     PSBT_IN_TAP_MERKLE_ROOT,
     PSBT_IN_WITNESS_UTXO,
 )
+from deps.bitcoin_test.script import CScript, CScriptInvalidError
 from deps.bitcoin_test.script_util import (
     key_to_p2pkh_script,
     key_to_p2sh_p2wpkh_script,
@@ -31,6 +41,12 @@ from .psbt_bip375 import (
     PSBT_GLOBAL_SP_ECDH_SHARE,
     PSBT_IN_SP_ECDH_SHARE,
     PSBT_OUT_SP_V0_INFO,
+)
+
+# BIP-341 NUMS point H: a taproot input with this internal key has no key path and
+# is not eligible for silent payments
+NUMS_H = bytes.fromhex(
+    "50929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac0"
 )
 
 
@@ -129,7 +145,43 @@ def pubkey_from_eligible_input(input_map: BIP375PSBTMap) -> Optional[GE]:
     for pubkey, _ in input_map.get_all_by_type(PSBT_IN_BIP32_DERIVATION):
         if len(pubkey) == 33 and _script_commits_to_pubkey(script_pubkey, pubkey):
             return GE.from_bytes(pubkey)
+
+    # The Input Finalizer prunes the BIP32 derivations, so recover the pubkey from
+    # the final fields: the last witness item of a P2WPKH or P2SH-P2WPKH spend, or
+    # the last scriptSig push of a P2PKH spend. Neither is authenticated until
+    # consensus checks it, so as with a derivation, use it only if the prevout
+    # script commits to it.
+    final_witness = input_map.get(PSBT_IN_FINAL_SCRIPTWITNESS)
+    if final_witness:
+        candidate = deser_string_vector(BytesIO(final_witness))[-1:]
+    else:
+        candidate = [_last_push(input_map.get(PSBT_IN_FINAL_SCRIPTSIG))]
+    for pubkey in candidate:
+        if pubkey is not None and len(pubkey) == 33 and _script_commits_to_pubkey(
+            script_pubkey, pubkey
+        ):
+            return GE.from_bytes(pubkey)
     return None
+
+
+def _redeem_script(input_map: BIP375PSBTMap) -> Optional[bytes]:
+    """PSBT_IN_REDEEM_SCRIPT or, once the Input Finalizer has pruned it, the
+    last push of PSBT_IN_FINAL_SCRIPTSIG, which is where a P2SH spend carries it"""
+    redeem_script = input_map.get(PSBT_IN_REDEEM_SCRIPT)
+    if redeem_script is not None:
+        return redeem_script
+    return _last_push(input_map.get(PSBT_IN_FINAL_SCRIPTSIG))
+
+
+def _last_push(script_sig: Optional[bytes]) -> Optional[bytes]:
+    """Data of the last push in a scriptSig, or None"""
+    if not script_sig:
+        return None
+    try:
+        items = list(CScript(script_sig))
+    except CScriptInvalidError:
+        return None
+    return items[-1] if items and isinstance(items[-1], bytes) else None
 
 
 def _script_commits_to_pubkey(script_pubkey: bytes, pubkey: bytes) -> bool:
@@ -194,9 +246,6 @@ def is_input_eligible(input_map: BIP375PSBTMap) -> bool:
     if not _has_eligible_script_type(script_pubkey):
         return False
 
-    NUMS_H = bytes.fromhex(
-        "50929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac0"
-    )
     if is_p2tr(script_pubkey):
         # The internal key and merkle root are unauthenticated: a NUMS claim only
         # makes the input ineligible if it reproduces the scriptPubKey
@@ -208,15 +257,34 @@ def is_input_eligible(input_map: BIP375PSBTMap) -> bool:
             and _taproot_output_key(NUMS_H, merkle_root) == script_pubkey[2:34]
         ):
             return False
+        if _final_witness_nums_claim(input_map):
+            return False
 
     if is_p2sh(script_pubkey):
-        if PSBT_IN_REDEEM_SCRIPT in input_map:
-            redeem_script = input_map[PSBT_IN_REDEEM_SCRIPT]
+        redeem_script = _redeem_script(input_map)
+        if redeem_script is not None:
             if not is_p2wpkh(redeem_script):
                 return False
         else:
             raise ValueError("P2SH input missing redeem script")
     return True
+
+
+def _final_witness_nums_claim(input_map: BIP375PSBTMap) -> bool:
+    """True if a finalized script-path witness spends from the NUMS internal key.
+
+    The Input Finalizer prunes PSBT_IN_TAP_INTERNAL_KEY and PSBT_IN_TAP_MERKLE_ROOT,
+    so read the internal key from the control block, as BIP-352 does. Unlike those
+    fields the witness is part of the transaction: a control block that does not
+    reproduce the scriptPubKey fails consensus, so the claim needs no further check.
+    """
+    final_witness = input_map.get(PSBT_IN_FINAL_SCRIPTWITNESS)
+    if not final_witness:
+        return False
+    stack = deser_string_vector(BytesIO(final_witness))
+    if len(stack) >= 2 and stack[-1][:1] == b"\x50":
+        stack = stack[:-1]  # drop the annex
+    return len(stack) >= 2 and stack[-1][1:33] == NUMS_H
 
 
 def _taproot_output_key(internal_key: bytes, merkle_root: bytes) -> bytes:

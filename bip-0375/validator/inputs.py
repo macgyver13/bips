@@ -6,12 +6,13 @@ PSBT input utility functions
 import struct
 from typing import Optional, Tuple
 
-from deps.bitcoin_test.messages import CTransaction, CTxOut, from_binary
+from deps.bitcoin_test.messages import COutPoint, CTransaction, CTxOut, from_binary
 from deps.bitcoin_test.psbt import (
     PSBT,
     PSBT_IN_BIP32_DERIVATION,
     PSBT_IN_NON_WITNESS_UTXO,
     PSBT_IN_OUTPUT_INDEX,
+    PSBT_IN_PREVIOUS_TXID,
     PSBT_IN_REDEEM_SCRIPT,
     PSBT_IN_TAP_INTERNAL_KEY,
     PSBT_IN_TAP_MERKLE_ROOT,
@@ -25,7 +26,12 @@ from deps.bitcoin_test.script_util import (
 from secp256k1lab.secp256k1 import G, GE
 from secp256k1lab.util import tagged_hash
 
-from .psbt_bip375 import BIP375PSBTMap, PSBT_GLOBAL_SP_ECDH_SHARE, PSBT_IN_SP_ECDH_SHARE
+from .psbt_bip375 import (
+    BIP375PSBTMap,
+    PSBT_GLOBAL_SP_ECDH_SHARE,
+    PSBT_IN_SP_ECDH_SHARE,
+    PSBT_OUT_SP_V0_INFO,
+)
 
 
 def collect_input_ecdh_and_pubkey(
@@ -74,6 +80,37 @@ def collect_input_ecdh_and_pubkey(
     return None, None
 
 
+def sp_scan_keys(psbt: PSBT) -> set:
+    """Every scan key referenced by a silent payment output"""
+    return {
+        output_map[PSBT_OUT_SP_V0_INFO][:33]
+        for output_map in psbt.o
+        if PSBT_OUT_SP_V0_INFO in output_map
+    }
+
+
+def build_outpoints(psbt: PSBT) -> list:
+    """Each input's PSBT_IN_PREVIOUS_TXID and PSBT_IN_OUTPUT_INDEX as a COutPoint"""
+    outpoints = []
+    for input_map in psbt.i:
+        if PSBT_IN_PREVIOUS_TXID in input_map and PSBT_IN_OUTPUT_INDEX in input_map:
+            txid_int = int.from_bytes(input_map[PSBT_IN_PREVIOUS_TXID], "little")
+            output_index = struct.unpack("<I", input_map[PSBT_IN_OUTPUT_INDEX])[0]
+            outpoints.append(COutPoint(txid_int, output_index))
+    return outpoints
+
+
+def scan_key_is_covered(psbt: PSBT, scan_key: bytes) -> bool:
+    """True when the scan key has a global ECDH share, or a per-input share on
+    every eligible input"""
+    if psbt.g.get_by_key(PSBT_GLOBAL_SP_ECDH_SHARE, scan_key):
+        return True
+    eligible = [input_map for input_map in psbt.i if is_input_eligible(input_map)]
+    return bool(eligible) and all(
+        input_map.get_by_key(PSBT_IN_SP_ECDH_SHARE, scan_key) for input_map in eligible
+    )
+
+
 def pubkey_from_eligible_input(input_map: BIP375PSBTMap) -> Optional[GE]:
     """
     Extract the public key from a PSBT input map if eligible for silent payments
@@ -83,8 +120,8 @@ def pubkey_from_eligible_input(input_map: BIP375PSBTMap) -> Optional[GE]:
     if not is_input_eligible(input_map):
         return None
 
-    script_pubkey = _script_pubkey_from_psbt_input(input_map)
-    if _is_p2tr(script_pubkey):
+    script_pubkey = script_pubkey_from_psbt_input(input_map)
+    if is_p2tr(script_pubkey):
         return GE.from_bytes(bytes([0x02]) + script_pubkey[2:34])
 
     # An input may carry several BIP32 derivations, and none of them is
@@ -109,7 +146,7 @@ def _script_commits_to_pubkey(script_pubkey: bytes, pubkey: bytes) -> bool:
 # ============================================================================
 
 
-def _script_pubkey_from_psbt_input(input_map: BIP375PSBTMap) -> Optional[bytes]:
+def script_pubkey_from_psbt_input(input_map: BIP375PSBTMap) -> Optional[bytes]:
     """Extract scriptPubKey from PSBT input fields"""
     script_pubkey = None
 
@@ -149,7 +186,7 @@ def _parse_non_witness_utxo(non_witness_utxo: bytes, output_index: int) -> bytes
 
 def is_input_eligible(input_map: BIP375PSBTMap) -> bool:
     """Check if input is eligible for silent payments"""
-    script_pubkey = _script_pubkey_from_psbt_input(input_map)
+    script_pubkey = script_pubkey_from_psbt_input(input_map)
     assert script_pubkey is not None, (
         "scriptPubKey could not be extracted from PSBT input"
     )
@@ -160,7 +197,7 @@ def is_input_eligible(input_map: BIP375PSBTMap) -> bool:
     NUMS_H = bytes.fromhex(
         "50929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac0"
     )
-    if _is_p2tr(script_pubkey):
+    if is_p2tr(script_pubkey):
         # The internal key and merkle root are unauthenticated: a NUMS claim only
         # makes the input ineligible if it reproduces the scriptPubKey
         tap_internal_key = input_map.get(PSBT_IN_TAP_INTERNAL_KEY)
@@ -172,10 +209,10 @@ def is_input_eligible(input_map: BIP375PSBTMap) -> bool:
         ):
             return False
 
-    if _is_p2sh(script_pubkey):
+    if is_p2sh(script_pubkey):
         if PSBT_IN_REDEEM_SCRIPT in input_map:
             redeem_script = input_map[PSBT_IN_REDEEM_SCRIPT]
-            if not _is_p2wpkh(redeem_script):
+            if not is_p2wpkh(redeem_script):
                 return False
         else:
             assert False
@@ -191,35 +228,35 @@ def _taproot_output_key(internal_key: bytes, merkle_root: bytes) -> bytes:
 def _has_eligible_script_type(script_pubkey: bytes) -> bool:
     """True if scriptPubKey is eligible for silent payments"""
     return (
-        _is_p2pkh(script_pubkey)
-        or _is_p2wpkh(script_pubkey)
-        or _is_p2tr(script_pubkey)
-        or _is_p2sh(script_pubkey)
+        is_p2pkh(script_pubkey)
+        or is_p2wpkh(script_pubkey)
+        or is_p2tr(script_pubkey)
+        or is_p2sh(script_pubkey)
     )
 
 
-def _is_p2tr(spk: bytes) -> bool:
+def is_p2tr(spk: bytes) -> bool:
     if len(spk) != 34:
         return False
     # OP_1 OP_PUSHBYTES_32 <32 bytes>
     return (spk[0] == 0x51) & (spk[1] == 0x20)
 
 
-def _is_p2wpkh(spk: bytes) -> bool:
+def is_p2wpkh(spk: bytes) -> bool:
     if len(spk) != 22:
         return False
     # OP_0 OP_PUSHBYTES_20 <20 bytes>
     return (spk[0] == 0x00) & (spk[1] == 0x14)
 
 
-def _is_p2sh(spk: bytes) -> bool:
+def is_p2sh(spk: bytes) -> bool:
     if len(spk) != 23:
         return False
     # OP_HASH160 OP_PUSHBYTES_20 <20 bytes> OP_EQUAL
     return (spk[0] == 0xA9) & (spk[1] == 0x14) & (spk[-1] == 0x87)
 
 
-def _is_p2pkh(spk: bytes) -> bool:
+def is_p2pkh(spk: bytes) -> bool:
     if len(spk) != 25:
         return False
     # OP_DUP OP_HASH160 OP_PUSHBYTES_20 <20 bytes> OP_EQUALVERIFY OP_CHECKSIG

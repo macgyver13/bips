@@ -5,7 +5,6 @@ import argparse
 import json
 from pathlib import Path
 import sys
-from typing import Tuple
 
 project_root = Path(__file__).parent
 deps_dir = project_root / "deps"
@@ -14,54 +13,7 @@ for path in [str(deps_dir), str(secp256k1lab_dir)]:
     if path not in sys.path:
         sys.path.insert(0, path)
 
-from validator.psbt_bip375 import BIP375PSBT
-from validator.validate_psbt import (
-    validate_psbt_structure,
-    validate_ecdh_coverage,
-    validate_input_eligibility,
-    validate_output_scripts,
-)
-
-CHECK_FUNCTIONS = {
-    "psbt_structure": validate_psbt_structure,
-    "ecdh_coverage": validate_ecdh_coverage,
-    "input_eligibility": validate_input_eligibility,
-    "output_scripts": validate_output_scripts,
-}
-
-
-def validate_bip375_psbt(
-    psbt_data: str, checks: list[str], debug: bool = False
-) -> Tuple[bool, str, str]:
-    """Performs sequential validation of a PSBT against BIP-375 rules.
-
-    Returns (is_valid, message, failing_check): failing_check names the check
-    that rejected the PSBT, or None if every check passed.
-    """
-    psbt = BIP375PSBT.from_base64(psbt_data)
-
-    if checks is None:
-        checks = [
-            "psbt_structure",
-            "ecdh_coverage",
-            "input_eligibility",
-            "output_scripts",
-        ]
-
-    for check_name in checks:
-        if check_name not in CHECK_FUNCTIONS:
-            return False, f"Unknown check: {check_name}", check_name
-
-        check_fn = CHECK_FUNCTIONS[check_name]
-
-        is_valid, msg = check_fn(psbt)
-        if debug:
-            msg = f"{check_name.upper()}: {msg}" if msg else msg
-
-        if not is_valid:
-            return False, msg, check_name
-
-    return True, "All checks passed", None
+from validator.validate_psbt import validate_bip375_psbt
 
 
 def load_test_vectors(filename: str) -> dict:

@@ -7,14 +7,11 @@ input eligibility, and output script correctness.
 """
 
 import struct
-from typing import Tuple
+from typing import Iterator, Optional, Tuple
 
-from deps.bitcoin_test.messages import COutPoint
 from deps.bitcoin_test.psbt import (
     PSBT,
     PSBT_GLOBAL_TX_MODIFIABLE,
-    PSBT_IN_OUTPUT_INDEX,
-    PSBT_IN_PREVIOUS_TXID,
     PSBT_IN_SIGHASH_TYPE,
     PSBT_IN_WITNESS_UTXO,
     PSBT_OUT_SCRIPT,
@@ -24,14 +21,18 @@ from secp256k1lab.secp256k1 import GE
 
 from .bip352_crypto import compute_silent_payment_output_script
 from .inputs import (
-    _is_p2tr,
-    _script_pubkey_from_psbt_input,
+    build_outpoints,
     collect_input_ecdh_and_pubkey,
     is_input_eligible,
+    is_p2tr,
     parse_witness_utxo,
     pubkey_from_eligible_input,
+    script_pubkey_from_psbt_input,
+    sp_scan_keys,
 )
 from .psbt_bip375 import (
+    BIP375PSBT,
+    BIP375PSBTMap,
     PSBT_GLOBAL_SP_ECDH_SHARE,
     PSBT_GLOBAL_SP_DLEQ,
     PSBT_IN_SP_ECDH_SHARE,
@@ -142,12 +143,7 @@ def validate_ecdh_coverage(psbt: PSBT) -> Tuple[bool, str]:
     - If PSBT_OUT_SCRIPT is set, all eligible inputs must have ECDH coverage
     - DLEQ proofs must verify correctly
     """
-    # Collect unique scan keys from SP outputs
-    scan_keys = set()
-    for output_map in psbt.o:
-        if PSBT_OUT_SP_V0_INFO in output_map:
-            sp_info = output_map[PSBT_OUT_SP_V0_INFO]
-            scan_keys.add(sp_info[:33])
+    scan_keys = sp_scan_keys(psbt)
 
     if not scan_keys:
         return True, None  # No SP outputs, nothing to check
@@ -297,7 +293,7 @@ def validate_input_eligibility(psbt: PSBT) -> Tuple[bool, str]:
                 sighash_type = struct.unpack("<I", sighash[:4])[0]
                 if sighash_type != 1 and not (  # SIGHASH_ALL
                     sighash_type == 0  # SIGHASH_DEFAULT
-                    and _is_p2tr(_script_pubkey_from_psbt_input(input_map) or b"")
+                    and is_p2tr(script_pubkey_from_psbt_input(input_map) or b"")
                 ):
                     return (
                         False,
@@ -322,6 +318,44 @@ def validate_input_eligibility(psbt: PSBT) -> Tuple[bool, str]:
     return True, None
 
 
+def derive_sp_output_scripts(
+    psbt: PSBT,
+) -> Iterator[Tuple[int, BIP375PSBTMap, Optional[bytes]]]:
+    """Yield (output_idx, output_map, computed_script) for every silent payment output.
+
+    k is assigned per scan key in (sp_info, output_idx) sorted order, so the
+    Signer that sets the scripts and the checks that verify them agree.
+    computed_script is None when the ECDH share or input pubkeys are unavailable.
+    """
+    outpoints = build_outpoints(psbt)
+
+    sp_outputs = [
+        (output_map[PSBT_OUT_SP_V0_INFO], output_idx, output_map)
+        for output_idx, output_map in enumerate(psbt.o)
+        if PSBT_OUT_SP_V0_INFO in output_map
+    ]
+    sp_outputs.sort(key=lambda entry: (entry[0], entry[1]))
+
+    scan_key_k_values = {}
+    for sp_info, output_idx, output_map in sp_outputs:
+        scan_key = sp_info[:33]
+        spend_key = sp_info[33:]
+        k = scan_key_k_values.get(scan_key, 0)
+
+        ecdh_share_bytes, summed_pubkey_bytes = collect_input_ecdh_and_pubkey(
+            psbt, scan_key
+        )
+
+        if ecdh_share_bytes and summed_pubkey_bytes and outpoints:
+            script = compute_silent_payment_output_script(
+                outpoints, summed_pubkey_bytes, ecdh_share_bytes, spend_key, k
+            )
+            scan_key_k_values[scan_key] = k + 1
+            yield output_idx, output_map, script
+        else:
+            yield output_idx, output_map, None
+
+
 def validate_output_scripts(psbt: PSBT) -> Tuple[bool, str]:
     """
     Validate computed output scripts match silent payment derivation
@@ -332,55 +366,54 @@ def validate_output_scripts(psbt: PSBT) -> Tuple[bool, str]:
     - k values are tracked per scan key and incremented for each SP output sharing
       the same scan key (outputs with different scan keys use independent k counters)
     """
-    # Build outpoints list
-    outpoints = []
-    for input_map in psbt.i:
-        if PSBT_IN_PREVIOUS_TXID in input_map and PSBT_IN_OUTPUT_INDEX in input_map:
-            output_index_bytes = input_map.get(PSBT_IN_OUTPUT_INDEX)
-            txid_int = int.from_bytes(input_map[PSBT_IN_PREVIOUS_TXID], "little")
-            output_index = struct.unpack("<I", output_index_bytes)[0]
-            outpoints.append(COutPoint(txid_int, output_index))
-
-    # Collect SP outputs and sort by (sp_info, output_idx) so k is assigned in
-    # lexicographic silent payment code order
-    sp_outputs = [
-        (output_map[PSBT_OUT_SP_V0_INFO], output_idx, output_map)
-        for output_idx, output_map in enumerate(psbt.o)
-        if PSBT_OUT_SP_V0_INFO in output_map
-    ]
-    sp_outputs.sort(key=lambda entry: (entry[0], entry[1]))
-
-    # Track k values per scan key
-    scan_key_k_values = {}
-
-    for sp_info, output_idx, output_map in sp_outputs:
-        scan_pubkey_bytes = sp_info[:33]
-        spend_pubkey_bytes = sp_info[33:]
-
-        k = scan_key_k_values.get(scan_pubkey_bytes, 0)
-
-        # Get ECDH share and summed pubkey
-        ecdh_share_bytes, summed_pubkey_bytes = collect_input_ecdh_and_pubkey(
-            psbt, scan_pubkey_bytes
-        )
-
-        if ecdh_share_bytes and summed_pubkey_bytes and outpoints:
-            computed_script = compute_silent_payment_output_script(
-                outpoints, summed_pubkey_bytes, ecdh_share_bytes, spend_pubkey_bytes, k
-            )
-
+    for output_idx, output_map, computed_script in derive_sp_output_scripts(psbt):
+        if computed_script is None:
             if PSBT_OUT_SCRIPT in output_map:
-                actual_script = output_map[PSBT_OUT_SCRIPT]
-                if actual_script != computed_script:
-                    return (
-                        False,
-                        f"Output {output_idx} script doesn't match silent payments derivation",
-                    )
-
-            scan_key_k_values[scan_pubkey_bytes] = k + 1
-        elif PSBT_OUT_SCRIPT in output_map:
+                return (
+                    False,
+                    f"Output {output_idx} has PSBT_OUT_SCRIPT but missing ECDH share or input pubkeys",
+                )
+        elif PSBT_OUT_SCRIPT in output_map and output_map[PSBT_OUT_SCRIPT] != computed_script:
             return (
                 False,
-                f"Output {output_idx} has PSBT_OUT_SCRIPT but missing ECDH share or input pubkeys",
+                f"Output {output_idx} script doesn't match silent payments derivation",
             )
     return True, None
+
+
+CHECK_FUNCTIONS = {
+    "psbt_structure": validate_psbt_structure,
+    "ecdh_coverage": validate_ecdh_coverage,
+    "input_eligibility": validate_input_eligibility,
+    "output_scripts": validate_output_scripts,
+}
+
+
+def run_checks(
+    psbt: PSBT, checks: Optional[list[str]] = None, debug: bool = False
+) -> Tuple[bool, str, Optional[str]]:
+    """Run the named checks (every check by default) in order on a parsed PSBT.
+
+    Returns (is_valid, message, failing_check): failing_check names the check
+    that rejected the PSBT, or None if every check passed.
+    """
+    for check_name in checks if checks is not None else CHECK_FUNCTIONS:
+        if check_name not in CHECK_FUNCTIONS:
+            return False, f"Unknown check: {check_name}", check_name
+
+        is_valid, msg = CHECK_FUNCTIONS[check_name](psbt)
+        if debug:
+            msg = f"{check_name.upper()}: {msg}" if msg else msg
+
+        if not is_valid:
+            return False, msg, check_name
+
+    return True, "All checks passed", None
+
+
+def validate_bip375_psbt(
+    psbt_data: str, checks: Optional[list[str]] = None, debug: bool = False
+) -> Tuple[bool, str, Optional[str]]:
+    """Performs sequential validation of a base64 PSBT against BIP-375 rules.
+    See run_checks for the return value."""
+    return run_checks(BIP375PSBT.from_base64(psbt_data), checks, debug)

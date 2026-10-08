@@ -14,6 +14,7 @@ for path in [str(deps_dir), str(secp256k1lab_dir)]:
         sys.path.insert(0, path)
 
 from validator.validate_psbt import validate_bip375_psbt
+from workflow.validate_workflow import run_vectors
 
 
 def load_test_vectors(filename: str) -> dict:
@@ -27,12 +28,6 @@ def load_test_vectors(filename: str) -> dict:
     except json.JSONDecodeError as e:
         print(f"Error: Invalid JSON in test vector file: {e}")
         sys.exit(1)
-
-
-# Tasks this runner recognizes for the `valid` section. No role is driven yet,
-# so every task validates only; an unrecognized task is still an error rather
-# than a silently ignored typo.
-KNOWN_VALID_TASKS = {"deserialize", "sign", "finalize"}
 
 
 def run_invalid_tests(test_data: dict, verbosity: int = 0) -> tuple[int, int]:
@@ -81,41 +76,25 @@ def run_invalid_tests(test_data: dict, verbosity: int = 0) -> tuple[int, int]:
 
 
 def run_valid_tests(test_data: dict, verbosity: int = 0) -> tuple[int, int]:
-    """Run the `valid` section (each PSBT should pass validation)."""
-    passed = 0
-    failed = 0
-
+    """Run the `valid` section: validate the incoming PSBT, then drive the role
+    its task names and match the result to expected.psbt."""
     valid_tests = test_data.get("valid", [])
     print(f"Valid PSBTs: {len(valid_tests)}")
-    for test_vector in valid_tests:
-        task = test_vector.get("supplementary", {}).get("task")
-        print(f"{test_vector['description']}")
-
-        if task not in KNOWN_VALID_TASKS:
-            failed += 1
-            print(f"  ERROR: unknown task '{task}'")
-            continue
-
-        is_valid, result, failing_check = validate_bip375_psbt(
-            test_vector["psbt"], test_vector.get("checks"), debug=verbosity >= 2
-        )
-        if is_valid:
-            passed += 1
-            if verbosity >= 1:
-                print(f"  {result}")
-        else:
-            failed += 1
-            print(f"  ERROR: {failing_check}: {result}")
-
-    return passed, failed
+    return run_vectors(valid_tests, verbose=verbosity >= 1)
 
 
-def run_validation_tests(test_data: dict, verbosity: int = 0) -> tuple[int, int]:
-    """Run validation checks for both sections."""
-    invalid_passed, invalid_failed = run_invalid_tests(test_data, verbosity)
-    print("")
-    valid_passed, valid_failed = run_valid_tests(test_data, verbosity)
-    return invalid_passed + valid_passed, invalid_failed + valid_failed
+def run_workflow_tests(test_data: dict, verbosity: int = 0) -> tuple[int, int]:
+    """Run the `workflows` section: each entry is one role transition."""
+    steps = test_data.get("workflows", [])
+    print(f"Workflow steps: {len(steps)}")
+    return run_vectors(steps, verbose=verbosity >= 1)
+
+
+SECTIONS = {
+    "invalid": run_invalid_tests,
+    "valid": run_valid_tests,
+    "workflow": run_workflow_tests,
+}
 
 
 def main():
@@ -135,6 +114,13 @@ def main():
         default=0,
         help="Verbosity level: -v shows pass/fail details, -vv enables debug output",
     )
+    parser.add_argument(
+        "--section",
+        "-s",
+        action="append",
+        choices=SECTIONS,
+        help="Run only this section (repeatable; default: every section)",
+    )
 
     args = parser.parse_args()
 
@@ -144,9 +130,15 @@ def main():
     print(f"Version: {test_data.get('version', 'N/A')}")
     print()
 
-    passed, failed = run_validation_tests(test_data, args.verbosity)
+    passed = failed = 0
+    for name, run_section in SECTIONS.items():
+        if args.section and name not in args.section:
+            continue
+        section_passed, section_failed = run_section(test_data, args.verbosity)
+        passed += section_passed
+        failed += section_failed
+        print()
 
-    print()
     print(f"Summary: {passed} passed, {failed} failed")
 
     sys.exit(0 if failed == 0 else 1)

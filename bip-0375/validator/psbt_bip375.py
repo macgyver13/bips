@@ -88,28 +88,38 @@ class BIP375PSBT(PSBT):
         )
 
     def deserialize(self, f):
-        assert f.read(5) == b"psbt\xff"
-        self.g = from_binary(BIP375PSBTMap, f)
+        """Deserialize into BIP375PSBTMap instances. Malformed bytes raise
+        ValueError, including the low-level errors the vendored parse helpers
+        raise, and the checks hold under python -O."""
+        try:
+            if f.read(5) != b"psbt\xff":
+                raise ValueError("bad PSBT magic bytes")
+            self.g = from_binary(BIP375PSBTMap, f)
 
-        self.version = 0
-        if PSBT_GLOBAL_VERSION in self.g.map:
-            assert PSBT_GLOBAL_INPUT_COUNT in self.g.map
-            assert PSBT_GLOBAL_OUTPUT_COUNT in self.g.map
-            self.version = struct.unpack("<I", self.g.map[PSBT_GLOBAL_VERSION])[0]
-            assert self.version in [0, 2]
-        if self.version == 2:
-            self.in_count = deser_compact_size(
-                BytesIO(self.g.map[PSBT_GLOBAL_INPUT_COUNT])
-            )
-            self.out_count = deser_compact_size(
-                BytesIO(self.g.map[PSBT_GLOBAL_OUTPUT_COUNT])
-            )
-        else:
-            assert PSBT_GLOBAL_UNSIGNED_TX in self.g.map
-            tx = from_binary(CTransaction, self.g.map[PSBT_GLOBAL_UNSIGNED_TX])
-            self.in_count = len(tx.vin)
-            self.out_count = len(tx.vout)
+            self.version = 0
+            if PSBT_GLOBAL_VERSION in self.g.map:
+                if (PSBT_GLOBAL_INPUT_COUNT not in self.g.map
+                        or PSBT_GLOBAL_OUTPUT_COUNT not in self.g.map):
+                    raise ValueError("PSBTv2 missing input/output count")
+                self.version = struct.unpack("<I", self.g.map[PSBT_GLOBAL_VERSION])[0]
+                if self.version not in (0, 2):
+                    raise ValueError(f"unsupported PSBT version {self.version}")
+            if self.version == 2:
+                self.in_count = deser_compact_size(
+                    BytesIO(self.g.map[PSBT_GLOBAL_INPUT_COUNT])
+                )
+                self.out_count = deser_compact_size(
+                    BytesIO(self.g.map[PSBT_GLOBAL_OUTPUT_COUNT])
+                )
+            else:
+                if PSBT_GLOBAL_UNSIGNED_TX not in self.g.map:
+                    raise ValueError("PSBTv0 missing unsigned tx")
+                tx = from_binary(CTransaction, self.g.map[PSBT_GLOBAL_UNSIGNED_TX])
+                self.in_count = len(tx.vin)
+                self.out_count = len(tx.vout)
 
-        self.i = [from_binary(BIP375PSBTMap, f) for _ in range(self.in_count)]
-        self.o = [from_binary(BIP375PSBTMap, f) for _ in range(self.out_count)]
+            self.i = [from_binary(BIP375PSBTMap, f) for _ in range(self.in_count)]
+            self.o = [from_binary(BIP375PSBTMap, f) for _ in range(self.out_count)]
+        except (struct.error, OverflowError, IndexError, EOFError, AssertionError) as e:
+            raise ValueError(f"malformed PSBT: {e!r}") from e
         return self

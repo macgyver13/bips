@@ -430,6 +430,9 @@ Use the provided [[bip-0375/test_runner.py|test runner]] to validate each test v
 
 == Changelog ==
 
+* '''0.2.0''' (TBD):
+** Add a reference PSBT v2 role implementation (Creator through Extractor) and step-by-step workflow test vectors (v1.3.1) exercising it.
+** Validate finalized PSBTs: recover input pubkeys, P2SH redeem scripts and NUMS internal key claims from the final scriptSig and witness.
 * '''0.1.4''' (TBD):
 ** Select the PSBT_IN_BIP32_DERIVATION whose pubkey the prevout script commits to, rather than the first one.
 ** Accept SIGHASH_DEFAULT on taproot inputs, as BIP-352 recommends for taproot.

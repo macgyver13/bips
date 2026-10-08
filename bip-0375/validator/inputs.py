@@ -17,7 +17,11 @@ from deps.bitcoin_test.psbt import (
     PSBT_IN_TAP_MERKLE_ROOT,
     PSBT_IN_WITNESS_UTXO,
 )
-from deps.bitcoin_test.script import hash160
+from deps.bitcoin_test.script_util import (
+    key_to_p2pkh_script,
+    key_to_p2sh_p2wpkh_script,
+    key_to_p2wpkh_script,
+)
 from secp256k1lab.secp256k1 import G, GE
 from secp256k1lab.util import tagged_hash
 
@@ -86,29 +90,18 @@ def pubkey_from_eligible_input(input_map: BIP375PSBTMap) -> Optional[GE]:
     # An input may carry several BIP32 derivations, and none of them is
     # authenticated: use the one whose pubkey the prevout script commits to
     for pubkey, _ in input_map.get_all_by_type(PSBT_IN_BIP32_DERIVATION):
-        if len(pubkey) == 33 and _script_commits_to_pubkey(
-            input_map, script_pubkey, pubkey
-        ):
+        if len(pubkey) == 33 and _script_commits_to_pubkey(script_pubkey, pubkey):
             return GE.from_bytes(pubkey)
     return None
 
 
-def _script_commits_to_pubkey(
-    input_map: BIP375PSBTMap, script_pubkey: bytes, pubkey: bytes
-) -> bool:
+def _script_commits_to_pubkey(script_pubkey: bytes, pubkey: bytes) -> bool:
     """True if the P2PKH, P2WPKH or P2SH-P2WPKH scriptPubKey commits to pubkey"""
-    pubkey_hash = hash160(pubkey)
-    if _is_p2pkh(script_pubkey):
-        return script_pubkey[3:23] == pubkey_hash
-    if _is_p2wpkh(script_pubkey):
-        return script_pubkey[2:22] == pubkey_hash
-    if _is_p2sh(script_pubkey):
-        redeem_script = input_map.get(PSBT_IN_REDEEM_SCRIPT)
-        return (
-            redeem_script == bytes([0x00, 0x14]) + pubkey_hash
-            and script_pubkey[2:22] == hash160(redeem_script)
-        )
-    return False
+    return script_pubkey in (
+        key_to_p2pkh_script(pubkey),
+        key_to_p2wpkh_script(pubkey),
+        key_to_p2sh_p2wpkh_script(pubkey),
+    )
 
 
 # ============================================================================

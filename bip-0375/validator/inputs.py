@@ -6,7 +6,7 @@ PSBT input utility functions
 import struct
 from typing import Optional, Tuple
 
-from deps.bitcoin_test.messages import CTransaction, CTxOut, from_binary, hash160
+from deps.bitcoin_test.messages import CTransaction, CTxOut, from_binary
 from deps.bitcoin_test.psbt import (
     PSBT,
     PSBT_IN_BIP32_DERIVATION,
@@ -17,6 +17,7 @@ from deps.bitcoin_test.psbt import (
     PSBT_IN_TAP_MERKLE_ROOT,
     PSBT_IN_WITNESS_UTXO,
 )
+from deps.bitcoin_test.script import hash160
 from secp256k1lab.secp256k1 import G, GE
 from secp256k1lab.util import tagged_hash
 

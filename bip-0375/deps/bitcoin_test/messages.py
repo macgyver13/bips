@@ -36,10 +36,6 @@ WITNESS_SCALE_FACTOR = 4
 # Serialization utilities
 # ============================================================================
 
-def hash160(s: bytes) -> bytes:
-    return hashlib.new("ripemd160", sha256(s)).digest()
-
-
 def sha256(s: bytes) -> bytes:
     return hashlib.sha256(s).digest()
 

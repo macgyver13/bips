@@ -13,41 +13,7 @@ for path in [str(deps_dir), str(secp256k1lab_dir)]:
     if path not in sys.path:
         sys.path.insert(0, path)
 
-from validator.psbt_bip375 import BIP375PSBT, ValidationError
-from validator.validate_psbt import (
-    validate_psbt_structure,
-    validate_ecdh_coverage,
-    validate_input_eligibility,
-    validate_output_scripts,
-)
-
-CHECK_FUNCTIONS = {
-    "psbt_structure": validate_psbt_structure,
-    "ecdh_coverage": validate_ecdh_coverage,
-    "input_eligibility": validate_input_eligibility,
-    "output_scripts": validate_output_scripts,
-}
-
-
-def validate_bip375_psbt(psbt_data: str) -> tuple[bool, str, str | None]:
-    """Performs sequential validation of a PSBT against BIP-375 rules.
-
-    Returns (is_valid, message, failing_check): failing_check names the check
-    that rejected the PSBT, or None if every check passed. A PSBT that does
-    not parse counts as a PSBT Structure failure.
-    """
-    try:
-        psbt = BIP375PSBT.from_base64(psbt_data)
-    except ValueError as e:
-        return False, str(e), "psbt_structure"
-
-    for check_name, check_fn in CHECK_FUNCTIONS.items():
-        try:
-            check_fn(psbt)
-        except ValidationError as e:
-            return False, str(e), check_name
-
-    return True, "All checks passed", None
+from validator.validate_psbt import validate_bip375_psbt
 
 
 def load_test_vectors(filename: str) -> dict:

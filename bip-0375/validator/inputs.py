@@ -8,6 +8,7 @@ from io import BytesIO
 from typing import List, Optional, Tuple
 
 from deps.bitcoin_test.messages import (
+    COutPoint,
     CTransaction,
     CTxOut,
     deser_string_vector,
@@ -23,6 +24,7 @@ from deps.bitcoin_test.psbt import (
     PSBT_IN_NON_WITNESS_UTXO,
     PSBT_IN_OUTPUT_INDEX,
     PSBT_IN_PARTIAL_SIG,
+    PSBT_IN_PREVIOUS_TXID,
     PSBT_IN_REDEEM_SCRIPT,
     PSBT_IN_TAP_INTERNAL_KEY,
     PSBT_IN_TAP_KEY_SIG,
@@ -37,6 +39,7 @@ from .psbt_bip375 import (
     BIP375PSBTMap,
     PSBT_GLOBAL_SP_ECDH_SHARE,
     PSBT_IN_SP_ECDH_SHARE,
+    PSBT_OUT_SP_V0_INFO,
     ValidationError,
 )
 
@@ -97,6 +100,41 @@ def collect_input_ecdh_and_pubkey(
             )
         return combined_ecdh.to_bytes_compressed(), summed_pubkey.to_bytes_compressed()
     return None, None
+
+
+def sp_scan_keys(psbt: PSBT) -> set:
+    """Every scan key referenced by a silent payment output"""
+    return {
+        output_map[PSBT_OUT_SP_V0_INFO][:33]
+        for output_map in psbt.o
+        if PSBT_OUT_SP_V0_INFO in output_map
+    }
+
+
+def build_outpoints(psbt: PSBT) -> list:
+    """Each input's PSBT_IN_PREVIOUS_TXID and PSBT_IN_OUTPUT_INDEX as a COutPoint"""
+    outpoints = []
+    for input_map in psbt.i:
+        if PSBT_IN_PREVIOUS_TXID in input_map and PSBT_IN_OUTPUT_INDEX in input_map:
+            txid_int = int.from_bytes(input_map[PSBT_IN_PREVIOUS_TXID], "little")
+            output_index = struct.unpack("<I", input_map[PSBT_IN_OUTPUT_INDEX])[0]
+            outpoints.append(COutPoint(txid_int, output_index))
+    return outpoints
+
+
+def scan_key_is_covered(psbt: PSBT, scan_key: bytes) -> bool:
+    """True when the scan key has a global ECDH share, or a per-input share on
+    every eligible input"""
+    if psbt.g.get_by_key(PSBT_GLOBAL_SP_ECDH_SHARE, scan_key):
+        return True
+    eligible = [
+        input_map
+        for i, input_map in enumerate(psbt.i)
+        if is_input_eligible(input_map, i)
+    ]
+    return bool(eligible) and all(
+        input_map.get_by_key(PSBT_IN_SP_ECDH_SHARE, scan_key) for input_map in eligible
+    )
 
 
 def pubkey_from_eligible_input(input_map: BIP375PSBTMap, index: int) -> Optional[GE]:

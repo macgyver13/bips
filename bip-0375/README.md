@@ -8,10 +8,17 @@ A reference validation implementation for BIP-375: Sending Silent Payments with 
 - **`validator/psbt_bip375.py`** - BIP-375 specific PSBT/PSBTMap extensions
 - **`validator/validate_psbt.py`** - Main BIP-375 validation functions
 - **`test_runner.py`** - Test infrastructure (executable)
+- **`workflow/sp_signer.py`** - BIP-375 Signer through the output scripts, without transaction signatures
+- **`workflow/validate_workflow.py`** - Per-task checks for the vector file
+
+## What the runner checks
+
+For `create`, `expected.psbt` must pass the BIP-375 checks. For `update`, both the incoming PSBT and `expected.psbt` must pass. Nothing is rebuilt. For `sign`, the runner adds this signer's ECDH shares, DLEQ proofs and output scripts and compares those fields to `expected.psbt`. `expected.psbt` must also pass the checks. Its other fields are taken as given. For `finalize`, output maps and outpoints are unchanged and `expected.psbt` still passes the checks, including on a finalized PSBT. For `extract`, the finalized PSBT passes the checks and `expected.tx` carries the verified silent payment output scripts and the PSBT's outpoints. Final scripts and transaction signatures are not rebuilt here. [bip375-test-generator](https://github.com/macgyver13/bip375-test-generator/) checks those before it emits a vector. A full create-to-extract flow, including hardware signers, is in [bip375-examples](https://github.com/macgyver13/bip375-examples/).
 
 ## Dependencies
 - **`deps/bitcoin_test/psbt.py`** - Bitcoin test framework PSBT module - [PR #21283](https://github.com/bitcoin/bitcoin/pull/21283)
 - **`deps/bitcoin_test/messages.py`** - Bitcoin test framework primitives and message structures
+- **`deps/bitcoin_test/crypto/ripemd160.py`** - pure-Python RIPEMD-160 for hash160, from Bitcoin Core `7988380da9`
 - **`deps/dleq.py`** - Reference DLEQ implementation from BIP-374
 - **`deps/secp256k1lab/`** - vendored copy of [secp256k1lab](https://github.com/secp256k1lab/secp256k1lab/commit/44dc4bd893b8f03e621585e3bf255253e0e0fbfb) library at version 1.0.0
 
@@ -20,8 +27,9 @@ A reference validation implementation for BIP-375: Sending Silent Payments with 
 Each vector is a base64 PSBT with a `description`, a `task`, and a `supplementary` field:
 
 - `task` - the outcome a runner should expect. `invalid` vectors use
-  `fail_deserialize` (must be rejected by the PSBT Structure check) or `fail_sign`
-  (must pass PSBT Structure and be rejected by a later check). `valid` vectors use
+  `fail_deserialize` (must be rejected by the PSBT Structure check), `fail_sign` or
+  `fail_extract` (must pass PSBT Structure and be rejected by a later check). `fail_extract`
+  is a finalized PSBT. `valid` vectors use
   `finalize` (fully signed, ready to finalize), `sign` (a valid but not-yet-signed
   or partially-signed snapshot) or `deserialize` (valid, with no signing expected).
 - `supplementary` - diagnostic material (`inputs`, `outputs`, `sp_proofs`, and

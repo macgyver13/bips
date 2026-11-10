@@ -14,6 +14,7 @@ for path in [str(deps_dir), str(secp256k1lab_dir)]:
         sys.path.insert(0, path)
 
 from validator.validate_psbt import validate_bip375_psbt
+from workflow.validate_workflow import run_vectors
 
 
 def load_test_vectors(filename: str) -> dict:
@@ -34,7 +35,8 @@ def run_invalid_tests(test_data: dict, verbosity: int = 0) -> tuple[int, int, in
 
     The `task` defines which check must reject it:
     `fail_deserialize` must be rejected by the structural check, while
-    `fail_sign` must pass structure and only fail a later check.
+    `fail_sign` and `fail_extract` must pass structure and only fail a later
+    check.
     """
     passed = 0
     failed = 0
@@ -46,7 +48,7 @@ def run_invalid_tests(test_data: dict, verbosity: int = 0) -> tuple[int, int, in
         task = test_vector.get("task")
 
         print(f"{test_vector['description']}")
-        if task not in ("fail_deserialize", "fail_sign"):
+        if task not in ("fail_deserialize", "fail_sign", "fail_extract"):
             skipped += 1
             print(f"  SKIPPED: task '{task}'")
             continue
@@ -70,27 +72,17 @@ def run_invalid_tests(test_data: dict, verbosity: int = 0) -> tuple[int, int, in
 
 
 def run_valid_tests(test_data: dict, verbosity: int = 0) -> tuple[int, int]:
-    """Run the `valid` section (each PSBT should pass validation)."""
-    passed = 0
-    failed = 0
-
+    """Run the valid section through the silent payment transition checks."""
     valid_tests = test_data.get("valid", [])
     print(f"Valid PSBTs: {len(valid_tests)}")
-    for test_vector in valid_tests:
-        print(f"{test_vector['description']}")
+    return run_vectors(valid_tests, verbose=verbosity >= 1)
 
-        is_valid, result, failing_check = validate_bip375_psbt(test_vector["psbt"])
-        if is_valid:
-            passed += 1
-            if verbosity >= 1:
-                print(f"  {result}")
-        else:
-            failed += 1
-            if verbosity >= 2:
-                result = f"{failing_check.upper()}: {result}"
-            print(f"  ERROR: {result}")
 
-    return passed, failed
+def run_workflow_tests(test_data: dict, verbosity: int = 0) -> tuple[int, int]:
+    """Run the workflows section through the silent payment transition checks."""
+    steps = test_data.get("workflows", [])
+    print(f"Workflow steps: {len(steps)}")
+    return run_vectors(steps, verbose=verbosity >= 1)
 
 
 def run_validation_tests(test_data: dict, verbosity: int = 0) -> tuple[int, int, int]:
@@ -98,7 +90,13 @@ def run_validation_tests(test_data: dict, verbosity: int = 0) -> tuple[int, int,
     invalid_passed, invalid_failed, skipped = run_invalid_tests(test_data, verbosity)
     print("")
     valid_passed, valid_failed = run_valid_tests(test_data, verbosity)
-    return invalid_passed + valid_passed, invalid_failed + valid_failed, skipped
+    print("")
+    workflow_passed, workflow_failed = run_workflow_tests(test_data, verbosity)
+    return (
+        invalid_passed + valid_passed + workflow_passed,
+        invalid_failed + valid_failed + workflow_failed,
+        skipped,
+    )
 
 
 def main():

@@ -11,7 +11,7 @@
   Assigned: 2025-01-08
   License: BSD-2-Clause
   Discussion: https://groups.google.com/g/bitcoindev/c/5G5wzqUXyk4
-  Version: 0.2.0
+  Version: 0.3.0
   Requires: 352, 370, 374
 </pre>
 
@@ -371,6 +371,12 @@ Use the provided [[bip-0375/test_runner.py|test runner]] to validate each test v
 | ECDH Coverage
 | P2SH-P2WPKH input 1 with a non-P2WPKH PSBT_IN_REDEEM_SCRIPT that does not hash to scriptPubKey and no ECDH share
 |-
+| ECDH Coverage
+| finalized NUMS script-path witness not committed to prevout, input missing ECDH share
+|-
+| ECDH Coverage
+| finalized P2SH-P2WPKH input with non-P2WPKH final scriptSig redeem script and no ECDH share
+|-
 | Input Eligibility
 | segwit version greater than 1 in transaction inputs with sp output
 |-
@@ -510,6 +516,10 @@ Use the provided [[bip-0375/test_runner.py|test runner]] to validate each test v
 
 == Changelog ==
 
+* '''0.3.0''' (TBD):
+** Validate finalized PSBTs: recover input pubkeys, P2SH redeem scripts and NUMS claims from the final scriptSig and witness so the Extractor can verify output scripts.
+** Check each workflow step's silent payment fields in the test runner, and add the fail_extract task for finalized invalid PSBTs.
+** Add the workflow steps and test vectors for the above (v1.3.0, which includes the workflow steps).
 * '''0.2.0''' (2026-11-25):
 ** Clarify that SIGHASH_DEFAULT is accepted in place of SIGHASH_ALL on taproot inputs, matching BIP352, and check the sighash type of every signature in the validator, not only PSBT_IN_SIGHASH_TYPE.
 ** Regenerate the test vectors with bip375-test-generator (v1.2.0) and update the validator to match.

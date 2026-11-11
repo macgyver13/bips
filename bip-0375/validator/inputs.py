@@ -6,17 +6,22 @@ PSBT input utility functions
 import struct
 from typing import Optional, Tuple
 
-from deps.bitcoin_test.messages import CTransaction, CTxOut, from_binary
+from deps.bitcoin_test.messages import CTransaction, CTxOut, from_binary, hash160
 from deps.bitcoin_test.psbt import (
     PSBT,
     PSBT_IN_BIP32_DERIVATION,
     PSBT_IN_NON_WITNESS_UTXO,
     PSBT_IN_OUTPUT_INDEX,
+    PSBT_IN_PARTIAL_SIG,
     PSBT_IN_REDEEM_SCRIPT,
     PSBT_IN_TAP_INTERNAL_KEY,
+    PSBT_IN_TAP_KEY_SIG,
+    PSBT_IN_TAP_MERKLE_ROOT,
+    PSBT_IN_TAP_SCRIPT_SIG,
     PSBT_IN_WITNESS_UTXO,
 )
-from secp256k1lab.secp256k1 import GE
+from secp256k1lab.secp256k1 import G, GE
+from secp256k1lab.util import tagged_hash
 
 from .psbt_bip375 import BIP375PSBTMap, PSBT_GLOBAL_SP_ECDH_SHARE, PSBT_IN_SP_ECDH_SHARE
 
@@ -27,23 +32,29 @@ def collect_input_ecdh_and_pubkey(
     """
     Collect combined ECDH share and summed pubkey for a scan key.
 
-    Checks global ECDH share first, falls back to per-input shares.
-    Returns (ecdh_share_bytes, summed_pubkey_bytes) or (None, None).
+    Uses the global ECDH share if set, otherwise the per-input shares.
+    Returns (ecdh_share_bytes, summed_pubkey_bytes) or (None, None), including
+    when a global share is set but an eligible input's pubkey is not recoverable.
     """
     # Check for global ECDH share
     summed_pubkey = None
     ecdh_share = psbt.g.get_by_key(PSBT_GLOBAL_SP_ECDH_SHARE, scan_key)
     if ecdh_share:
-        summed_pubkey = None
+        # A global share covers every eligible input, so its summed pubkey must
+        # too: an eligible input with no recoverable pubkey leaves no usable sum
         for input_map in psbt.i:
+            if not is_input_eligible(input_map):
+                continue
             pubkey = pubkey_from_eligible_input(input_map)
-            if pubkey is not None:
-                summed_pubkey = (
-                    pubkey if summed_pubkey is None else summed_pubkey + pubkey
-                )
+            if pubkey is None:
+                return None, None
+            summed_pubkey = (
+                pubkey if summed_pubkey is None else summed_pubkey + pubkey
+            )
 
         if summed_pubkey:
             return ecdh_share, summed_pubkey.to_bytes_compressed()
+        return None, None
 
     # Check for per-input ECDH shares
     combined_ecdh = None
@@ -76,18 +87,29 @@ def pubkey_from_eligible_input(input_map: BIP375PSBTMap) -> Optional[GE]:
     if not is_input_eligible(input_map):
         return None
 
-    # Try BIP32 derivation first (key_data is the pubkey)
-    derivations = input_map.get_all_by_type(PSBT_IN_BIP32_DERIVATION)
-    if derivations:
-        pubkey, _ = derivations[0]
-        if len(pubkey) == 33:
-            return GE.from_bytes(pubkey)
+    script_pubkey = _script_pubkey_from_psbt_input(input_map)
+    if _is_p2tr(script_pubkey):
+        return GE.from_bytes(bytes([0x02]) + script_pubkey[2:34])
 
-    # Try PSBT_IN_WITNESS_UTXO for P2TR inputs
-    spk = parse_witness_utxo(input_map[PSBT_IN_WITNESS_UTXO])
-    if spk and _is_p2tr(spk):
-        return GE.from_bytes(bytes([0x02]) + spk[2:34])
+    # An input may carry several BIP32 derivations, and none of them is
+    # authenticated: use the one whose pubkey the prevout script commits to
+    for pubkey, _ in input_map.get_all_by_type(PSBT_IN_BIP32_DERIVATION):
+        if len(pubkey) == 33 and _script_commits_to_pubkey(script_pubkey, pubkey):
+            return GE.from_bytes(pubkey)
     return None
+
+
+def _script_commits_to_pubkey(script_pubkey: bytes, pubkey: bytes) -> bool:
+    """True if the P2PKH, P2WPKH or P2SH-P2WPKH scriptPubKey commits to pubkey"""
+    pubkey_hash = hash160(pubkey)
+    if _is_p2pkh(script_pubkey):
+        return script_pubkey[3:23] == pubkey_hash
+    if _is_p2wpkh(script_pubkey):
+        return script_pubkey[2:22] == pubkey_hash
+    if _is_p2sh(script_pubkey):
+        # P2SH-P2WPKH: the redeem script is OP_0 <pubkey hash>
+        return script_pubkey[2:22] == hash160(bytes([0x00, 0x14]) + pubkey_hash)
+    return False
 
 
 # ============================================================================
@@ -124,7 +146,8 @@ def parse_witness_utxo(witness_utxo: bytes) -> bytes:
 def _parse_non_witness_utxo(non_witness_utxo: bytes, output_index: int) -> bytes:
     """Extract scriptPubKey from non_witness_utxo"""
     tx = from_binary(CTransaction, non_witness_utxo)
-    assert output_index < len(tx.vout), "Invalid output index"
+    if output_index >= len(tx.vout):
+        raise ValueError("Invalid output index")
     return tx.vout[output_index].scriptPubKey
 
 
@@ -136,9 +159,8 @@ def _parse_non_witness_utxo(non_witness_utxo: bytes, output_index: int) -> bytes
 def is_input_eligible(input_map: BIP375PSBTMap) -> bool:
     """Check if input is eligible for silent payments"""
     script_pubkey = _script_pubkey_from_psbt_input(input_map)
-    assert script_pubkey is not None, (
-        "scriptPubKey could not be extracted from PSBT input"
-    )
+    if script_pubkey is None:
+        raise ValueError("scriptPubKey could not be extracted from PSBT input")
 
     if not _has_eligible_script_type(script_pubkey):
         return False
@@ -147,8 +169,15 @@ def is_input_eligible(input_map: BIP375PSBTMap) -> bool:
         "50929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac0"
     )
     if _is_p2tr(script_pubkey):
+        # The internal key and merkle root are unauthenticated: a NUMS claim only
+        # makes the input ineligible if it reproduces the scriptPubKey
         tap_internal_key = input_map.get(PSBT_IN_TAP_INTERNAL_KEY)
-        if tap_internal_key == NUMS_H:
+        merkle_root = input_map.get(PSBT_IN_TAP_MERKLE_ROOT)
+        if (
+            tap_internal_key == NUMS_H
+            and merkle_root is not None
+            and _taproot_output_key(NUMS_H, merkle_root) == script_pubkey[2:34]
+        ):
             return False
 
     if _is_p2sh(script_pubkey):
@@ -157,8 +186,14 @@ def is_input_eligible(input_map: BIP375PSBTMap) -> bool:
             if not _is_p2wpkh(redeem_script):
                 return False
         else:
-            assert False
+            raise ValueError("P2SH input missing redeem script")
     return True
+
+
+def _taproot_output_key(internal_key: bytes, merkle_root: bytes) -> bytes:
+    """BIP-341 x-only output key for an internal key and script tree merkle root"""
+    tweak = int.from_bytes(tagged_hash("TapTweak", internal_key + merkle_root), "big")
+    return (GE.lift_x(int.from_bytes(internal_key, "big")) + tweak * G).to_bytes_xonly()
 
 
 def _has_eligible_script_type(script_pubkey: bytes) -> bool:
@@ -203,3 +238,17 @@ def _is_p2pkh(spk: bytes) -> bool:
         & (spk[-2] == 0x88)
         & (spk[-1] == 0xAC)
     )
+
+
+# ============================================================================
+# Signature helpers
+# ============================================================================
+
+
+def input_signatures(input_map: BIP375PSBTMap) -> list:
+    """Every signature an input carries, as (signature, is_schnorr) tuples"""
+    sigs = [(sig, False) for _, sig in input_map.get_all_by_type(PSBT_IN_PARTIAL_SIG)]
+    if PSBT_IN_TAP_KEY_SIG in input_map:
+        sigs.append((input_map[PSBT_IN_TAP_KEY_SIG], True))
+    sigs += [(sig, True) for _, sig in input_map.get_all_by_type(PSBT_IN_TAP_SCRIPT_SIG)]
+    return sigs

@@ -11,7 +11,7 @@
   Assigned: 2025-01-08
   License: BSD-2-Clause
   Discussion: https://groups.google.com/g/bitcoindev/c/5G5wzqUXyk4
-  Version: 0.1.4
+  Version: 0.2.0
   Requires: 352, 370, 374
 </pre>
 
@@ -189,8 +189,8 @@ If any output does not have PSBT_OUT_SCRIPT set, the Signer must not yet add a s
 
 The Signer should additionally compute the silent payment addresses, optionally showing this data to the user instead of the computed segwit v1 addresses.
 
-If a sighash type is provided and there are silent payment outputs present, the signer must fail if the sighash type is not SIGHASH_ALL.
-If a sighash type is not provided and there are silent payment outputs present, the signer must sign using SIGHASH_ALL.<ref name="why_use_sighash_all"> ''' Why use only SIGHASH_ALL?''' BIP352 allows signing with SIGHASH_NONE and SIGHASH_SINGLE. However, silent payment capable PSBTs compute the output scripts deterministically based on the number and position of silent payment codes with the same scan key. SIGHASH_NONE and SIGHASH_SINGLE allow changing the amount or position of silent payment codes with the same scan and spend keys, which would invalidate computed output scripts.</ref>
+If a sighash type is provided and there are silent payment outputs present, the signer must fail if the sighash type is not SIGHASH_ALL, or SIGHASH_DEFAULT for a taproot input.<ref name="why_allow_sighash_default"> ''' Why allow SIGHASH_DEFAULT?''' BIP341 defines SIGHASH_DEFAULT as committing to the same transaction data as SIGHASH_ALL, and BIP352 recommends it for taproot inputs.</ref>
+If a sighash type is not provided and there are silent payment outputs present, the signer must sign using SIGHASH_ALL, or SIGHASH_DEFAULT for a taproot input.<ref name="why_use_sighash_all"> ''' Why use only SIGHASH_ALL?''' BIP352 allows signing with SIGHASH_NONE and SIGHASH_SINGLE. However, silent payment capable PSBTs compute the output scripts deterministically based on the number and position of silent payment codes with the same scan key. SIGHASH_NONE and SIGHASH_SINGLE allow changing the amount or position of silent payment codes with the same scan and spend keys, which would invalidate computed output scripts.</ref>
 
 ====Computing the ECDH Shares and DLEQ Proofs====
 
@@ -287,10 +287,22 @@ Use the provided [[bip-0375/test_runner.py|test runner]] to validate each test v
 | incorrect byte length for PSBT_IN_SP_DLEQ field
 |-
 | PSBT Structure
-| PSBT_GLOBAL_TX_MODIFIABLE field is non-zero when PSBT_OUT_SCRIPT set for sp output
+| PSBT_IN_SP_ECDH_SHARE scan key is not a valid point
+|-
+| PSBT Structure
+| PSBT_IN_SP_ECDH_SHARE value is not a valid point
+|-
+| PSBT Structure
+| PSBT_OUT_SP_V0_INFO scan key is not a valid point
+|-
+| PSBT Structure
+| PSBT_OUT_SP_V0_INFO spend key is not a valid point
 |-
 | PSBT Structure
 | missing PSBT_OUT_SCRIPT field when sending to non-sp output
+|-
+| PSBT Structure
+| PSBT_OUT_SP_V0_INFO and PSBT_IN_SP_ECDH_SHARE in a version 0 PSBT
 |-
 | ECDH Coverage
 | only one ineligible P2SH multisig input when PSBT_OUT_SCRIPT set for sp output
@@ -299,16 +311,28 @@ Use the provided [[bip-0375/test_runner.py|test runner]] to validate each test v
 | missing PSBT_IN_SP_ECDH_SHARE field for input 0 when PSBT_OUT_SCRIPT set for sp output
 |-
 | ECDH Coverage
+| input 1 with no PSBT_IN_WITNESS_UTXO or PSBT_IN_NON_WITNESS_UTXO and no ECDH share when PSBT_OUT_SCRIPT set for sp output
+|-
+| ECDH Coverage
 | missing PSBT_IN_SP_DLEQ field for input when PSBT_IN_SP_ECDH_SHARE set
 |-
 | ECDH Coverage
-| missing PSBT_GLOBAL_SP_DLEQ field when PSBT_GLOBAL_SP_ECDH_SHARE set
+| missing PSBT_IN_SP_DLEQ field for input when PSBT_IN_SP_ECDH_SHARE set and PSBT_OUT_SCRIPT not set
 |-
 | ECDH Coverage
 | invalid proof in PSBT_IN_SP_DLEQ field
 |-
 | ECDH Coverage
+| invalid proof in PSBT_IN_SP_DLEQ field when PSBT_OUT_SCRIPT not set
+|-
+| ECDH Coverage
+| missing PSBT_GLOBAL_SP_DLEQ field when PSBT_GLOBAL_SP_ECDH_SHARE set
+|-
+| ECDH Coverage
 | invalid proof in PSBT_GLOBAL_SP_DLEQ field
+|-
+| ECDH Coverage
+| global ECDH share proven over a subset of eligible inputs
 |-
 | ECDH Coverage
 | missing PSBT_IN_BIP32_DERIVATION field for input when PSBT_IN_SP_DLEQ set
@@ -322,6 +346,21 @@ Use the provided [[bip-0375/test_runner.py|test runner]] to validate each test v
 | ECDH Coverage
 | input 1 missing ECDH share for scan key with two inputs / one sp output
 |-
+| ECDH Coverage
+| P2WPKH BIP32_DERIVATION pubkey does not match prevout script
+|-
+| ECDH Coverage
+| P2PKH BIP32_DERIVATION pubkey does not match prevout script
+|-
+| ECDH Coverage
+| P2SH-P2WPKH BIP32_DERIVATION pubkey does not match prevout script
+|-
+| ECDH Coverage
+| global ECDH share computed from decoy pubkey not matching prevout script
+|-
+| ECDH Coverage
+| P2TR input with NUMS internal key claim not matching prevout missing ECDH share
+|-
 | Input Eligibility
 | segwit version greater than 1 in transaction inputs with sp output
 |-
@@ -330,6 +369,33 @@ Use the provided [[bip-0375/test_runner.py|test runner]] to validate each test v
 |-
 | Input Eligibility
 | non-SIGHASH_ALL signature on input with sp output
+|-
+| Input Eligibility
+| non-SIGHASH_ALL signature on input with sp output and PSBT_IN_SIGHASH_TYPE omitted
+|-
+| Input Eligibility
+| non-SIGHASH_ALL signature on ineligible input with sp output
+|-
+| Input Eligibility
+| non-SIGHASH_ALL signature on ineligible input with sp output and PSBT_IN_SIGHASH_TYPE omitted
+|-
+| Input Eligibility
+| non-SIGHASH_ALL signature on taproot input with sp output
+|-
+| Input Eligibility
+| non-SIGHASH_ALL signature on taproot input with sp output and PSBT_IN_SIGHASH_TYPE omitted
+|-
+| Input Eligibility
+| SIGHASH_ALL|ANYONECANPAY sighash type on input with sp output
+|-
+| Input Eligibility
+| SIGHASH_DEFAULT sighash type on non-taproot input with sp output
+|-
+| Input Eligibility
+| PSBT_GLOBAL_TX_MODIFIABLE Inputs/Outputs Modifiable flags not cleared when PSBT_OUT_SCRIPT set for sp output
+|-
+| Input Eligibility
+| input signed before every sp output has PSBT_OUT_SCRIPT
 |-
 | Output Scripts
 | P2TR input with NUMS internal key cannot derive sp output
@@ -369,6 +435,9 @@ Use the provided [[bip-0375/test_runner.py|test runner]] to validate each test v
 | three sp outputs (different scan keys) with multiple global ECDH shares
 |-
 | Can Finalize
+| one P2TR input signed with SIGHASH_DEFAULT
+|-
+| Can Finalize
 | one P2WPKH input / two mixed outputs - labeled sp output and BIP 32 change
 |-
 | Can Finalize
@@ -387,10 +456,19 @@ Use the provided [[bip-0375/test_runner.py|test runner]] to validate each test v
 | two mixed input types - only eligible inputs contribute ECDH shares (NUMS internal key excluded)
 |-
 | Can Finalize
+| ineligible P2SH multisig input declaring SIGHASH_ALL
+|-
+| Can Finalize
 | three sp outputs (same scan key) - each output has distinct k value
 |-
 | Can Finalize
 | three sp outputs (same scan key) / two regular outputs - k values assigned independently of output index
+|-
+| Can Finalize
+| P2WPKH with decoy BIP32_DERIVATION before the matching key
+|-
+| Can Finalize
+| P2PKH with decoy BIP32_DERIVATION before the matching key
 |-
 | In Progress
 | two P2TR inputs, neither is signed
@@ -412,6 +490,21 @@ Use the provided [[bip-0375/test_runner.py|test runner]] to validate each test v
 |}
 
 == Changelog ==
+
+* '''0.2.0''' (TBD):
+** Select the PSBT_IN_BIP32_DERIVATION whose pubkey the prevout script commits to, rather than the first one.
+** Accept SIGHASH_DEFAULT on taproot inputs, as BIP-352 recommends for taproot, in the Signer rules and the validator.
+** Treat a P2TR input as NUMS-ineligible only when PSBT_IN_TAP_INTERNAL_KEY and PSBT_IN_TAP_MERKLE_ROOT reproduce the output key.
+** Treat an omitted PSBT_GLOBAL_TX_MODIFIABLE as zero, check only the Inputs Modifiable and Outputs Modifiable flags, and move the check to Input Eligibility.
+** Verify every per-input DLEQ proof present, not only once PSBT_OUT_SCRIPT is set.
+** Verify a global ECDH share against every eligible input's public key, failing if any is not recoverable.
+** Require SIGHASH_ALL (SIGHASH_DEFAULT for taproot) in the sighash byte of every signature, not only in PSBT_IN_SIGHASH_TYPE.
+** Reject signatures on a PSBT whose silent payment outputs do not all have PSBT_OUT_SCRIPT set.
+** Fail PSBT Structure when PSBT_IN_SIGHASH_TYPE is not 4 bytes, or when a PSBT other than version 2 carries BIP-375 fields.
+** Fail PSBT Structure when the scan key keydata of an ECDH share or DLEQ proof is not 33 bytes, or when a scan key, ECDH share or PSBT_OUT_SP_V0_INFO key is not a valid point.
+** Fail a check instead of crashing on malformed PSBT data: a missing UTXO or redeem script, an out-of-range output index, duplicate keys or trailing bytes.
+** Give every test vector a task naming the expected outcome, and check that each invalid vector fails the check its task implies.
+** Regenerate the test vectors with bip375-test-generator (v1.2.0) and add vectors for the above.
 
 * '''0.1.4''' (2026-11-10):
 ** Replace the bare OP_2 valid test vector with an In Progress vector that passes every check.

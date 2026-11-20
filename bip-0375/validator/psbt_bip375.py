@@ -6,11 +6,17 @@ BIP375PSBTMap (a PSBTMap subclass with BIP-375 field access helpers)
 BIP375PSBT (a PSBT subclass that deserializes into BIP375PSBTMap instances)
 """
 
+import base64
 from io import BytesIO
 import struct
 from typing import List, Optional, Tuple
 
-from deps.bitcoin_test.messages import CTransaction, deser_compact_size, from_binary
+from deps.bitcoin_test.messages import (
+    CTransaction,
+    deser_compact_size,
+    deser_string,
+    from_binary,
+)
 from deps.bitcoin_test.psbt import (
     PSBT,
     PSBTMap,
@@ -61,6 +67,22 @@ class BIP375PSBTMap(PSBTMap):
                 result.append((key[1:], value_data))
         return result
 
+    def deserialize(self, f):
+        """PSBTMap.deserialize that raises ValueError on a duplicate key. The
+        vendored version asserts."""
+        m = {}
+        while True:
+            k = deser_string(f)
+            if len(k) == 0:
+                break
+            v = deser_string(f)
+            if len(k) == 1:
+                k = k[0]
+            if k in m:
+                raise ValueError(f"duplicate PSBT key {_fmt_key(k)}")
+            m[k] = v
+        self.map = m
+
     def get_by_key(self, key_type: int, key_data: bytes) -> Optional[bytes]:
         """Get value_data for a specific key_type + key_data combination"""
         if key_data == b"":
@@ -71,29 +93,54 @@ class BIP375PSBTMap(PSBTMap):
 class BIP375PSBT(PSBT):
     """PSBT that deserializes maps as BIP375PSBTMap instances"""
 
+    @classmethod
+    def from_base64(cls, b64psbt):
+        """Parse a base64 PSBT and raise ValueError on bytes after the last map.
+        The vendored version asserts, and python -O strips asserts."""
+        f = BytesIO(base64.b64decode(b64psbt))
+        psbt = cls().deserialize(f)
+        if f.read(1):
+            raise ValueError("malformed PSBT: trailing bytes")
+        return psbt
+
     def deserialize(self, f):
-        assert f.read(5) == b"psbt\xff"
-        self.g = from_binary(BIP375PSBTMap, f)
+        """Deserialize into BIP375PSBTMap instances. Malformed bytes raise
+        ValueError, also when a vendored parse helper fails with a low-level
+        error. The checks hold under python -O."""
+        try:
+            if f.read(5) != b"psbt\xff":
+                raise ValueError("bad PSBT magic bytes")
+            self.g = from_binary(BIP375PSBTMap, f)
 
-        self.version = 0
-        if PSBT_GLOBAL_VERSION in self.g.map:
-            assert PSBT_GLOBAL_INPUT_COUNT in self.g.map
-            assert PSBT_GLOBAL_OUTPUT_COUNT in self.g.map
-            self.version = struct.unpack("<I", self.g.map[PSBT_GLOBAL_VERSION])[0]
-            assert self.version in [0, 2]
-        if self.version == 2:
-            self.in_count = deser_compact_size(
-                BytesIO(self.g.map[PSBT_GLOBAL_INPUT_COUNT])
-            )
-            self.out_count = deser_compact_size(
-                BytesIO(self.g.map[PSBT_GLOBAL_OUTPUT_COUNT])
-            )
-        else:
-            assert PSBT_GLOBAL_UNSIGNED_TX in self.g.map
-            tx = from_binary(CTransaction, self.g.map[PSBT_GLOBAL_UNSIGNED_TX])
-            self.in_count = len(tx.vin)
-            self.out_count = len(tx.vout)
+            self.version = 0
+            if PSBT_GLOBAL_VERSION in self.g.map:
+                if (PSBT_GLOBAL_INPUT_COUNT not in self.g.map
+                        or PSBT_GLOBAL_OUTPUT_COUNT not in self.g.map):
+                    raise ValueError("PSBTv2 missing input/output count")
+                self.version = struct.unpack("<I", self.g.map[PSBT_GLOBAL_VERSION])[0]
+                if self.version not in (0, 2):
+                    raise ValueError(f"unsupported PSBT version {self.version}")
+            if self.version == 2:
+                self.in_count = deser_compact_size(
+                    BytesIO(self.g.map[PSBT_GLOBAL_INPUT_COUNT])
+                )
+                self.out_count = deser_compact_size(
+                    BytesIO(self.g.map[PSBT_GLOBAL_OUTPUT_COUNT])
+                )
+            else:
+                if PSBT_GLOBAL_UNSIGNED_TX not in self.g.map:
+                    raise ValueError("PSBTv0 missing unsigned tx")
+                tx = from_binary(CTransaction, self.g.map[PSBT_GLOBAL_UNSIGNED_TX])
+                self.in_count = len(tx.vin)
+                self.out_count = len(tx.vout)
 
-        self.i = [from_binary(BIP375PSBTMap, f) for _ in range(self.in_count)]
-        self.o = [from_binary(BIP375PSBTMap, f) for _ in range(self.out_count)]
+            self.i = [from_binary(BIP375PSBTMap, f) for _ in range(self.in_count)]
+            self.o = [from_binary(BIP375PSBTMap, f) for _ in range(self.out_count)]
+        except (struct.error, OverflowError, IndexError, EOFError, AssertionError) as e:
+            raise ValueError(f"malformed PSBT: {e!r}") from e
         return self
+
+
+def _fmt_key(key) -> str:
+    """A PSBT map key as hex: an int key_type, or key_type followed by key_data"""
+    return f"{key:02x}" if isinstance(key, int) else key.hex()

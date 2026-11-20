@@ -314,6 +314,9 @@ Use the provided [[bip-0375/test_runner.py|test runner]] to validate each test v
 | invalid proof in PSBT_IN_SP_DLEQ field
 |-
 | ECDH Coverage
+| invalid proof in PSBT_IN_SP_DLEQ field when PSBT_OUT_SCRIPT not set for sp output
+|-
+| ECDH Coverage
 | invalid proof in PSBT_GLOBAL_SP_DLEQ field
 |-
 | ECDH Coverage

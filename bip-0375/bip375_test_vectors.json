@@ -268,6 +268,47 @@
       }
     },
     {
+      "description": "ecdh coverage: invalid proof in PSBT_IN_SP_DLEQ field when PSBT_OUT_SCRIPT not set for sp output",
+      "task": "fail_sign",
+      "psbt": "cHNidP8BAgQCAAAAAQQBAgEFAQEBBgEAAfsEAgAAAAABAHECAAAAARinF2Y7C6sUsSoadxMj/x5Aed1TLl3RPijqEIHHAJhKAAAAAAD+////ArCtAQAAAAAAFgAU7TjbCZtVOTtHiU9JCKBAQl1915ughgEAAAAAABYAFNDEo+8J6Ze26Z45flGP4+QaEYyhAAAAAAEBH6CGAQAAAAAAFgAU0MSj7wnpl7bpnjl+UY/j5BoRjKEBAwQBAAAAIgYC56slN7XUnpcDCargbp5J82zhyf671E7I4NHMoLT5wxkYc8XaClQAAIABAACAAAAAgAAAAAAAAAAAAQ4gJBV8HHllOP+9Onj45x9vzzwoHmp8s2t71Gtx8eBGCc8BDwQBAAAAARAE/v///yIdA0OfwjAYK0b/IgMsp64t/zKVjJoNF3x7cJbfDUtxQeshIQIYU8t+y4/zaLEGGbkkA454cGVw7538ViMHIlg/8F7CTiIeA0OfwjAYK0b/IgMsp64t/zKVjJoNF3x7cJbfDUtxQeshQJ0UuMYo79yQn6ffGZwdN9SXqxHdjV/glHDI1nMjD9r4UbTtub6wM8yMI2+Ml7uMgbnE3SP04Qyhd9mjdtZ9UzgAAQBxAgAAAAG+nWXIORX7CSSKu9/KjKPu5s41DFVPZejVJuXfUnq1IgAAAAAA/v///wIgTgAAAAAAABYAFKNCIuLW89MlfbU+88UryiCkyDkqECcAAAAAAAAWABRvoBZQCjxqc367Jg4t3KeLqSNFWAAAAAABAR8QJwAAAAAAABYAFG+gFlAKPGpzfrsmDi3cp4upI0VYIgYD7u0gWmkCL+1KYqAkV/NpmxnAa/dL+AGsxtmuhLwWqeEYc8XaClQAAIABAACAAAAAgAAAAAABAAAAAQ4gRlgyB00pVHsUc4WK+D4s2hUVR1H8PI14rf2joXyBEpgBDwQBAAAAARAE/v///wABAwgomgEAAAAAAAEJQgNDn8IwGCtG/yIDLKeuLf8ylYyaDRd8e3CW3w1LcUHrIQKDMIXJpxbTa0Z1UsANaqi9QuOa2+mLBbwgMRAXcZL3AgA=",
+      "supplementary": {
+        "inputs": [
+          {
+            "input_index": 0,
+            "private_key": "a9c4134b73560f43fc5c081e5c1daa7ce068adc806d80e1f37cb658e0fea4c8d",
+            "public_key": "02e7ab2537b5d49e970309aae06e9e49f36ce1c9febbd44ec8e0d1cca0b4f9c319",
+            "prevout_txid": "cf0946e0f1716bd47b6bb37c6a1e283ccf6f1fe7f8783abdff3865791c7c1524",
+            "prevout_index": 1,
+            "amount": 100000,
+            "non_witness_utxo": "020000000118a717663b0bab14b12a1a771323ff1e4079dd532e5dd13e28ea1081c700984a0000000000feffffff02b0ad010000000000160014ed38db099b55393b47894f4908a040425d7dd79ba086010000000000160014d0c4a3ef09e997b6e99e397e518fe3e41a118ca100000000",
+            "witness_utxo": "a086010000000000160014d0c4a3ef09e997b6e99e397e518fe3e41a118ca1",
+            "sequence": 4294967294,
+            "signed": false
+          },
+          {
+            "input_index": 1,
+            "private_key": "4f9fb140e0586691de963613549631e2048ab4030d74f4d98405686dd30a9d75",
+            "public_key": "03eeed205a69022fed4a62a02457f3699b19c06bf74bf801acc6d9ae84bc16a9e1",
+            "prevout_txid": "9812817ca1a3fdad788d3cfc51471515da2c3ef88a8573147b54294d07325846",
+            "prevout_index": 1,
+            "amount": 10000,
+            "non_witness_utxo": "0200000001be9d65c83915fb09248abbdfca8ca3eee6ce350c554f65e8d526e5df527ab5220000000000feffffff02204e000000000000160014a34222e2d6f3d3257db53ef3c52bca20a4c8392a10270000000000001600146fa016500a3c6a737ebb260e2ddca78ba923455800000000",
+            "witness_utxo": "10270000000000001600146fa016500a3c6a737ebb260e2ddca78ba9234558",
+            "sequence": 4294967294,
+            "signed": false
+          }
+        ],
+        "sp_proofs": [
+          {
+            "scan_key": "03439fc230182b46ff22032ca7ae2dff32958c9a0d177c7b7096df0d4b7141eb21",
+            "ecdh_share": "021853cb7ecb8ff368b10619b924038e78706570ef9dfc56230722583ff05ec24e",
+            "dleq_proof": "9d14b8c628efdc909fa7df199c1d37d497ab11dd8d5fe09470c8d673230fdaf851b4edb9beb033cc8c236f8c97bb8c81b9c4dd23f4e10ca177d9a376d67d5338",
+            "input_index": 0
+          }
+        ]
+      }
+    },
+    {
       "description": "ecdh coverage: invalid proof in PSBT_GLOBAL_SP_DLEQ field",
       "psbt": "cHNidP8B+wQCAAAAAQIEAgAAAAEEAQEBBQEBAQYBACIHAnpIf8Gft2mHe4dC1uoYEY88TnKx6oxt5gKnrUpB2+BoIQPspP8Rtyji4PYM5iIpQ6b/VbnZX2J7+amdCEvIctUKWyIIAnpIf8Gft2mHe4dC1uoYEY88TnKx6oxt5gKnrUpB2+BoQOfI/UQrlNiKKmoskrQ0ZI+gB8n+CARyozeA0LUjKETQm9iLP+6G0S1DhsRlf7t4Xi0vFL/PkYV0P+EqyCUPldkAAQ4gGKcXZjsLqxSxKhp3EyP/HkB53VMuXdE+KOoQgccAmEoBDwQAAAAAAQEfoIYBAAAAAAAWABQimnLTSmRb00lru/ULu4HJBj9PlCICAsgXu3Uhr8NeqW87+ycObrUN3/pVYGJ7lh/sAPKZZQi/RzBEAiAJB3pqpkrBSuehqk/mjAKs4gbJ6scjSQYa52A5ALkibgIgbxQypXj44zCvC5ACVnRryfTlKqLozHkCncjnajwpSwYBIgYCyBe7dSGvw16pbzv7Jw5utQ3f+lVgYnuWH+wA8pllCL8IAAAAgAAAAAABEAT+////AAEDCBhzAQAAAAAAAQQiUSAybfUP4KB7estyBwvrO2Muua0VumlcweWqaqAHthRv2AEJQgJ6SH/Bn7dph3uHQtbqGBGPPE5yseqMbeYCp61KQdvgaANh4bHp3l5CyyAH98pUueDVftE5OPrVbT8Z5XUTqPzgOQA=",
       "supplementary": {

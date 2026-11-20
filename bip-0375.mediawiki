@@ -284,6 +284,9 @@ Use the provided [[bip-0375/test_runner.py|test runner]] to validate each test v
 | incorrect byte length for PSBT_IN_SP_ECDH_SHARE field
 |-
 | PSBT Structure
+| incorrect byte length for PSBT_IN_SP_ECDH_SHARE scan key
+|-
+| PSBT Structure
 | incorrect byte length for PSBT_IN_SP_DLEQ field
 |-
 | PSBT Structure

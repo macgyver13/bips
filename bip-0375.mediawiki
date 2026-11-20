@@ -299,6 +299,12 @@ Use the provided [[bip-0375/test_runner.py|test runner]] to validate each test v
 | missing PSBT_IN_SP_ECDH_SHARE field for input 0 when PSBT_OUT_SCRIPT set for sp output
 |-
 | ECDH Coverage
+| input 1 with no PSBT_IN_WITNESS_UTXO or PSBT_IN_NON_WITNESS_UTXO and no ECDH share
+|-
+| ECDH Coverage
+| P2SH input 1 with no PSBT_IN_REDEEM_SCRIPT and no ECDH share
+|-
+| ECDH Coverage
 | missing PSBT_IN_SP_DLEQ field for input when PSBT_IN_SP_ECDH_SHARE set
 |-
 | ECDH Coverage

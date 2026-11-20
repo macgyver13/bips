@@ -23,10 +23,12 @@ from secp256k1lab.secp256k1 import GE
 
 from .bip352_crypto import compute_silent_payment_output_script
 from .inputs import (
-    _script_pubkey_from_psbt_input,
     collect_input_ecdh_and_pubkey,
+    input_signatures,
     is_input_eligible,
+    is_p2tr,
     pubkey_from_eligible_input,
+    script_pubkey_from_psbt_input,
 )
 from .psbt_bip375 import (
     PSBT_GLOBAL_SP_ECDH_SHARE,
@@ -280,7 +282,7 @@ def validate_input_eligibility(psbt: PSBT) -> Tuple[bool, str]:
 
     Checks:
     - No segwit v>1 inputs when SP outputs present
-    - SIGHASH_ALL required when SP outputs present
+    - Verify SIGHASH_ALL when SP outputs are present
     """
     # Check if SP outputs exist
     has_sp_outputs = any(PSBT_OUT_SP_V0_INFO in om for om in psbt.o)
@@ -289,22 +291,48 @@ def validate_input_eligibility(psbt: PSBT) -> Tuple[bool, str]:
 
     # Check segwit version restrictions
     for i, input_map in enumerate(psbt.i):
-        script = _script_pubkey_from_psbt_input(input_map)
+        script = script_pubkey_from_psbt_input(input_map)
         if script is not None and is_segwit_v2_or_later(script):
             return False, f"Input {i} uses segwit version > 1 with silent payments"
 
-    # Check SIGHASH_ALL requirement - PSBT_IN_SIGHASH_TYPE is optional, but if set it must be SIGHASH_ALL when SP outputs are present
+    # PSBT_IN_SIGHASH_TYPE is optional. If set, it must be SIGHASH_ALL 0x01, or
+    # SIGHASH_DEFAULT 0x00 on a taproot input. BIP-341 defines SIGHASH_DEFAULT
+    # as equivalent to SIGHASH_ALL.
     for i, input_map in enumerate(psbt.i):
         if PSBT_IN_SIGHASH_TYPE in input_map:
             sighash = input_map[PSBT_IN_SIGHASH_TYPE]
-            if len(sighash) >= 4:
-                sighash_type = struct.unpack("<I", sighash[:4])[0]
-                if sighash_type != 1:  # SIGHASH_ALL
-                    return (
-                        False,
-                        f"Input {i} uses non-SIGHASH_ALL ({sighash_type}) with silent payments",
-                    )
+            if not sighash:
+                return False, f"Input {i} has empty PSBT_IN_SIGHASH_TYPE"
+            sighash_type = int.from_bytes(sighash, "little")
+            if sighash_type != 0x01 and not (
+                sighash_type == 0x00
+                and is_p2tr(script_pubkey_from_psbt_input(input_map) or b"")
+            ):
+                return (
+                    False,
+                    f"Input {i} uses non-SIGHASH_ALL (0x{sighash_type:02x}) with silent payments",
+                )
+
+    # Check the sighash type of every PSBT_IN_PARTIAL_SIG, PSBT_IN_TAP_KEY_SIG and
+    # PSBT_IN_TAP_SCRIPT_SIG, whether or not PSBT_IN_SIGHASH_TYPE is set. A 64-byte
+    # Schnorr signature is SIGHASH_DEFAULT.
+    for i, input_map in enumerate(psbt.i):
+        for sig, is_schnorr in input_signatures(input_map):
+            if not _signs_sighash_all(sig, is_schnorr):
+                return (
+                    False,
+                    f"Input {i} has a non-SIGHASH_ALL signature (0x{sig[-1:].hex()}) with silent payments",
+                )
     return True, None
+
+
+def _signs_sighash_all(sig: bytes, is_schnorr: bool) -> bool:
+    """True if a signature uses SIGHASH_ALL, or SIGHASH_DEFAULT for a BIP-340
+    signature. A 64-byte signature encodes SIGHASH_DEFAULT by omitting the
+    type byte."""
+    if is_schnorr:
+        return len(sig) == 64 or (len(sig) == 65 and sig[-1] == 0x01)
+    return len(sig) > 0 and sig[-1] == 0x01
 
 
 def validate_output_scripts(psbt: PSBT) -> Tuple[bool, str]:

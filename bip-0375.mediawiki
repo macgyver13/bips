@@ -11,7 +11,7 @@
   Assigned: 2025-01-08
   License: BSD-2-Clause
   Discussion: https://groups.google.com/g/bitcoindev/c/5G5wzqUXyk4
-  Version: 0.1.4
+  Version: 0.2.0
   Requires: 352, 370, 374
 </pre>
 
@@ -189,8 +189,9 @@ If any output does not have PSBT_OUT_SCRIPT set, the Signer must not yet add a s
 
 The Signer should additionally compute the silent payment addresses, optionally showing this data to the user instead of the computed segwit v1 addresses.
 
-If a sighash type is provided and there are silent payment outputs present, the signer must fail if the sighash type is not SIGHASH_ALL.
-If a sighash type is not provided and there are silent payment outputs present, the signer must sign using SIGHASH_ALL.<ref name="why_use_sighash_all"> ''' Why use only SIGHASH_ALL?''' BIP352 allows signing with SIGHASH_NONE and SIGHASH_SINGLE. However, silent payment capable PSBTs compute the output scripts deterministically based on the number and position of silent payment codes with the same scan key. SIGHASH_NONE and SIGHASH_SINGLE allow changing the amount or position of silent payment codes with the same scan and spend keys, which would invalidate computed output scripts.</ref>
+If a sighash type is provided and there are silent payment outputs present, the Signer must fail if PSBT_IN_SIGHASH_TYPE is not SIGHASH_ALL.
+If a sighash type is not provided and there are silent payment outputs present, the Signer must sign using SIGHASH_ALL.<ref name="why_use_sighash_all"> ''' Why use only SIGHASH_ALL?''' BIP352 allows signing with SIGHASH_NONE and SIGHASH_SINGLE. However, silent payment capable PSBTs compute the output scripts deterministically based on the number and position of silent payment codes with the same scan key. SIGHASH_NONE and SIGHASH_SINGLE allow changing the amount or position of silent payment codes with the same scan and spend keys, which would invalidate computed output scripts.</ref>
+For a taproot input, SIGHASH_DEFAULT is accepted in place of SIGHASH_ALL in both cases.<ref name="why_allow_sighash_default"> ''' Why accept SIGHASH_DEFAULT?''' BIP341 defines SIGHASH_DEFAULT as signing over the whole transaction just as SIGHASH_ALL does. This matches BIP352, which recommends SIGHASH_ALL (SIGHASH_DEFAULT for taproot inputs).</ref>
 
 ====Computing the ECDH Shares and DLEQ Proofs====
 
@@ -343,6 +344,27 @@ Use the provided [[bip-0375/test_runner.py|test runner]] to validate each test v
 | Input Eligibility
 | non-SIGHASH_ALL signature on input with sp output
 |-
+| Input Eligibility
+| non-SIGHASH_ALL signature on input with sp output and PSBT_IN_SIGHASH_TYPE omitted
+|-
+| Input Eligibility
+| non-SIGHASH_ALL signature on ineligible input with sp output
+|-
+| Input Eligibility
+| non-SIGHASH_ALL signature on ineligible input with sp output and PSBT_IN_SIGHASH_TYPE omitted
+|-
+| Input Eligibility
+| non-SIGHASH_ALL signature on taproot input with sp output
+|-
+| Input Eligibility
+| non-SIGHASH_ALL signature on taproot input with sp output and PSBT_IN_SIGHASH_TYPE omitted
+|-
+| Input Eligibility
+| SIGHASH_ALL|ANYONECANPAY sighash type on input with sp output
+|-
+| Input Eligibility
+| SIGHASH_DEFAULT sighash type on non-taproot input with sp output
+|-
 | Output Scripts
 | P2TR input with NUMS internal key cannot derive sp output
 |-
@@ -381,6 +403,9 @@ Use the provided [[bip-0375/test_runner.py|test runner]] to validate each test v
 | three sp outputs (different scan keys) with multiple global ECDH shares
 |-
 | Can Finalize
+| one P2TR input signed with SIGHASH_DEFAULT
+|-
+| Can Finalize
 | one P2WPKH input / two mixed outputs - labeled sp output and BIP 32 change
 |-
 | Can Finalize
@@ -397,6 +422,9 @@ Use the provided [[bip-0375/test_runner.py|test runner]] to validate each test v
 |-
 | Can Finalize
 | two mixed input types - only eligible inputs contribute ECDH shares (NUMS internal key excluded)
+|-
+| Can Finalize
+| P2WPKH input with ineligible P2SH multisig input declaring SIGHASH_ALL
 |-
 | Can Finalize
 | three sp outputs (same scan key) - each output has distinct k value
@@ -425,6 +453,8 @@ Use the provided [[bip-0375/test_runner.py|test runner]] to validate each test v
 
 == Changelog ==
 
+* '''0.2.0''' (2026-11-25):
+** Clarify that SIGHASH_DEFAULT is accepted in place of SIGHASH_ALL on taproot inputs, matching BIP352, and check the sighash type of every signature in the validator, not only PSBT_IN_SIGHASH_TYPE.
 * '''0.1.4''' (2026-11-10):
 ** Replace the bare OP_2 valid test vector with an In Progress vector that passes every check.
 * '''0.1.3''' (2026-09-29):

@@ -4,7 +4,7 @@ PSBT input utility functions
 """
 
 import struct
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 from deps.bitcoin_test.messages import CTransaction, CTxOut, from_binary
 from deps.bitcoin_test.psbt import (
@@ -12,8 +12,11 @@ from deps.bitcoin_test.psbt import (
     PSBT_IN_BIP32_DERIVATION,
     PSBT_IN_NON_WITNESS_UTXO,
     PSBT_IN_OUTPUT_INDEX,
+    PSBT_IN_PARTIAL_SIG,
     PSBT_IN_REDEEM_SCRIPT,
     PSBT_IN_TAP_INTERNAL_KEY,
+    PSBT_IN_TAP_KEY_SIG,
+    PSBT_IN_TAP_SCRIPT_SIG,
     PSBT_IN_WITNESS_UTXO,
 )
 from secp256k1lab.secp256k1 import GE
@@ -85,7 +88,7 @@ def pubkey_from_eligible_input(input_map: BIP375PSBTMap) -> Optional[GE]:
 
     # Try PSBT_IN_WITNESS_UTXO for P2TR inputs
     spk = parse_witness_utxo(input_map[PSBT_IN_WITNESS_UTXO])
-    if spk and _is_p2tr(spk):
+    if spk and is_p2tr(spk):
         return GE.from_bytes(bytes([0x02]) + spk[2:34])
     return None
 
@@ -95,7 +98,7 @@ def pubkey_from_eligible_input(input_map: BIP375PSBTMap) -> Optional[GE]:
 # ============================================================================
 
 
-def _script_pubkey_from_psbt_input(input_map: BIP375PSBTMap) -> Optional[bytes]:
+def script_pubkey_from_psbt_input(input_map: BIP375PSBTMap) -> Optional[bytes]:
     """Extract scriptPubKey from PSBT input fields"""
     script_pubkey = None
 
@@ -136,7 +139,7 @@ def _parse_non_witness_utxo(non_witness_utxo: bytes, output_index: int) -> bytes
 
 def is_input_eligible(input_map: BIP375PSBTMap) -> bool:
     """Check if input is eligible for silent payments"""
-    script_pubkey = _script_pubkey_from_psbt_input(input_map)
+    script_pubkey = script_pubkey_from_psbt_input(input_map)
     if script_pubkey is None:
         raise ValueError("scriptPubKey could not be extracted from PSBT input")
 
@@ -146,15 +149,15 @@ def is_input_eligible(input_map: BIP375PSBTMap) -> bool:
     NUMS_H = bytes.fromhex(
         "50929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac0"
     )
-    if _is_p2tr(script_pubkey):
+    if is_p2tr(script_pubkey):
         tap_internal_key = input_map.get(PSBT_IN_TAP_INTERNAL_KEY)
         if tap_internal_key == NUMS_H:
             return False
 
-    if _is_p2sh(script_pubkey):
+    if is_p2sh(script_pubkey):
         if PSBT_IN_REDEEM_SCRIPT in input_map:
             redeem_script = input_map[PSBT_IN_REDEEM_SCRIPT]
-            if not _is_p2wpkh(redeem_script):
+            if not is_p2wpkh(redeem_script):
                 return False
         else:
             raise ValueError("P2SH input missing redeem script")
@@ -164,35 +167,35 @@ def is_input_eligible(input_map: BIP375PSBTMap) -> bool:
 def _has_eligible_script_type(script_pubkey: bytes) -> bool:
     """True if scriptPubKey is eligible for silent payments"""
     return (
-        _is_p2pkh(script_pubkey)
-        or _is_p2wpkh(script_pubkey)
-        or _is_p2tr(script_pubkey)
-        or _is_p2sh(script_pubkey)
+        is_p2pkh(script_pubkey)
+        or is_p2wpkh(script_pubkey)
+        or is_p2tr(script_pubkey)
+        or is_p2sh(script_pubkey)
     )
 
 
-def _is_p2tr(spk: bytes) -> bool:
+def is_p2tr(spk: bytes) -> bool:
     if len(spk) != 34:
         return False
     # OP_1 OP_PUSHBYTES_32 <32 bytes>
     return (spk[0] == 0x51) & (spk[1] == 0x20)
 
 
-def _is_p2wpkh(spk: bytes) -> bool:
+def is_p2wpkh(spk: bytes) -> bool:
     if len(spk) != 22:
         return False
     # OP_0 OP_PUSHBYTES_20 <20 bytes>
     return (spk[0] == 0x00) & (spk[1] == 0x14)
 
 
-def _is_p2sh(spk: bytes) -> bool:
+def is_p2sh(spk: bytes) -> bool:
     if len(spk) != 23:
         return False
     # OP_HASH160 OP_PUSHBYTES_20 <20 bytes> OP_EQUAL
     return (spk[0] == 0xA9) & (spk[1] == 0x14) & (spk[-1] == 0x87)
 
 
-def _is_p2pkh(spk: bytes) -> bool:
+def is_p2pkh(spk: bytes) -> bool:
     if len(spk) != 25:
         return False
     # OP_DUP OP_HASH160 OP_PUSHBYTES_20 <20 bytes> OP_EQUALVERIFY OP_CHECKSIG
@@ -203,3 +206,19 @@ def _is_p2pkh(spk: bytes) -> bool:
         & (spk[-2] == 0x88)
         & (spk[-1] == 0xAC)
     )
+
+
+# ============================================================================
+# Signature helpers
+# ============================================================================
+
+
+def input_signatures(input_map: BIP375PSBTMap) -> List[Tuple[bytes, bool]]:
+    """Every signature an input carries, as (signature, is_schnorr) tuples"""
+    sigs = [(sig, False) for _, sig in input_map.get_all_by_type(PSBT_IN_PARTIAL_SIG)]
+    if PSBT_IN_TAP_KEY_SIG in input_map:
+        sigs.append((input_map[PSBT_IN_TAP_KEY_SIG], True))
+    sigs += [
+        (sig, True) for _, sig in input_map.get_all_by_type(PSBT_IN_TAP_SCRIPT_SIG)
+    ]
+    return sigs

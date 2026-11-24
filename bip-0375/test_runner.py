@@ -63,20 +63,35 @@ def load_test_vectors(filename: str) -> dict:
         sys.exit(1)
 
 
-def run_invalid_tests(test_data: dict, verbosity: int = 0) -> tuple[int, int]:
-    """Run the `invalid` section (each PSBT should fail validation)."""
+def run_invalid_tests(test_data: dict, verbosity: int = 0) -> tuple[int, int, int]:
+    """Run the `invalid` section (each PSBT should fail validation).
+
+    The `task` defines which check must reject it:
+    `fail_deserialize` must be rejected by the structural check, while
+    `fail_sign` must pass structure and only fail a later check.
+    """
     passed = 0
     failed = 0
+    skipped = 0
 
     invalid_tests = test_data.get("invalid", [])
     print(f"Invalid PSBTs: {len(invalid_tests)}")
     for test_vector in invalid_tests:
-        print(f"{test_vector['description']}")
+        task = test_vector.get("task")
 
+        print(f"{test_vector['description']}")
+        if task not in ("fail_deserialize", "fail_sign"):
+            skipped += 1
+            print(f"  SKIPPED: task '{task}'")
+            continue
         is_valid, result, failing_check = validate_bip375_psbt(test_vector["psbt"])
         if is_valid:
             failed += 1
             print("  ERROR: expected validation to fail")
+            continue
+        if (failing_check == "psbt_structure") != (task == "fail_deserialize"):
+            failed += 1
+            print(f"  ERROR: task '{task}' but rejected by {failing_check}: {result}")
             continue
 
         passed += 1
@@ -85,7 +100,7 @@ def run_invalid_tests(test_data: dict, verbosity: int = 0) -> tuple[int, int]:
         elif verbosity >= 1:
             print(f"  {result}")
 
-    return passed, failed
+    return passed, failed, skipped
 
 
 def run_valid_tests(test_data: dict, verbosity: int = 0) -> tuple[int, int]:
@@ -112,12 +127,12 @@ def run_valid_tests(test_data: dict, verbosity: int = 0) -> tuple[int, int]:
     return passed, failed
 
 
-def run_validation_tests(test_data: dict, verbosity: int = 0) -> tuple[int, int]:
+def run_validation_tests(test_data: dict, verbosity: int = 0) -> tuple[int, int, int]:
     """Run validation checks for both sections."""
-    invalid_passed, invalid_failed = run_invalid_tests(test_data, verbosity)
+    invalid_passed, invalid_failed, skipped = run_invalid_tests(test_data, verbosity)
     print("")
     valid_passed, valid_failed = run_valid_tests(test_data, verbosity)
-    return invalid_passed + valid_passed, invalid_failed + valid_failed
+    return invalid_passed + valid_passed, invalid_failed + valid_failed, skipped
 
 
 def main():
@@ -146,10 +161,10 @@ def main():
     print(f"Version: {test_data.get('version', 'N/A')}")
     print()
 
-    passed, failed = run_validation_tests(test_data, args.verbosity)
+    passed, failed, skipped = run_validation_tests(test_data, args.verbosity)
 
     print()
-    print(f"Summary: {passed} passed, {failed} failed")
+    print(f"Summary: {passed} passed, {failed} failed, {skipped} skipped")
 
     sys.exit(0 if failed == 0 else 1)
 

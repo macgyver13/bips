@@ -333,6 +333,15 @@ Use the provided [[bip-0375/test_runner.py|test runner]] to validate each test v
 | invalid proof in PSBT_GLOBAL_SP_DLEQ field
 |-
 | ECDH Coverage
+| global ECDH share proven over a subset of eligible inputs
+|-
+| ECDH Coverage
+| PSBT_GLOBAL_SP_ECDH_SHARE set when the only input is ineligible (P2TR with NUMS internal key)
+|-
+| ECDH Coverage
+| eligible input keys sum to the point at infinity when PSBT_GLOBAL_SP_ECDH_SHARE set
+|-
+| ECDH Coverage
 | missing PSBT_IN_BIP32_DERIVATION field for input when PSBT_IN_SP_DLEQ set
 |-
 | ECDH Coverage
@@ -343,6 +352,9 @@ Use the provided [[bip-0375/test_runner.py|test runner]] to validate each test v
 |-
 | ECDH Coverage
 | input 1 missing ECDH share for scan key with two inputs / one sp output
+|-
+| ECDH Coverage
+| P2SH-P2WPKH input 1 with a non-P2WPKH PSBT_IN_REDEEM_SCRIPT that does not hash to scriptPubKey and no ECDH share
 |-
 | Input Eligibility
 | segwit version greater than 1 in transaction inputs with sp output
@@ -391,6 +403,9 @@ Use the provided [[bip-0375/test_runner.py|test runner]] to validate each test v
 |-
 | Output Scripts
 | k values assigned to wrong output indices with three sp outputs (same scan / spend keys)
+|-
+| Output Scripts
+| PSBT_OUT_SCRIPT set for sp output when the eligible input keys sum to the point at infinity
 |}
 
 ===Valid PSBTs===
@@ -440,6 +455,9 @@ Use the provided [[bip-0375/test_runner.py|test runner]] to validate each test v
 |-
 | Can Finalize
 | two mixed input types - only eligible inputs contribute ECDH shares (NUMS internal key excluded)
+|-
+| Can Finalize
+| two mixed input types - only eligible inputs contribute ECDH shares (uncompressed P2PKH excluded)
 |-
 | Can Finalize
 | P2WPKH input with ineligible P2SH multisig input declaring SIGHASH_ALL

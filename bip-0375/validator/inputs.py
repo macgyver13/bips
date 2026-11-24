@@ -6,7 +6,7 @@ PSBT input utility functions
 import struct
 from typing import List, Optional, Tuple
 
-from deps.bitcoin_test.messages import CTransaction, CTxOut, from_binary
+from deps.bitcoin_test.messages import CTransaction, CTxOut, from_binary, hash160
 from deps.bitcoin_test.psbt import (
     PSBT,
     PSBT_IN_BIP32_DERIVATION,
@@ -35,23 +35,28 @@ def collect_input_ecdh_and_pubkey(
     """
     Collect combined ECDH share and summed pubkey for a scan key.
 
-    Checks global ECDH share first, falls back to per-input shares.
-    Returns (ecdh_share_bytes, summed_pubkey_bytes) or (None, None).
+    Uses the global ECDH share if set, otherwise the per-input shares.
+    Returns (ecdh_share_bytes, summed_pubkey_bytes) or (None, None). Raises
+    ValidationError when the eligible input pubkeys cannot be summed.
     """
     # Check for global ECDH share
     summed_pubkey = None
     ecdh_share = psbt.g.get_by_key(PSBT_GLOBAL_SP_ECDH_SHARE, scan_key)
     if ecdh_share:
-        summed_pubkey = None
         for i, input_map in enumerate(psbt.i):
+            if not is_input_eligible(input_map, i):
+                continue
             pubkey = pubkey_from_eligible_input(input_map, i)
-            if pubkey is not None:
-                summed_pubkey = (
-                    pubkey if summed_pubkey is None else summed_pubkey + pubkey
-                )
-
-        if summed_pubkey:
-            return ecdh_share, summed_pubkey.to_bytes_compressed()
+            summed_pubkey = pubkey if summed_pubkey is None else summed_pubkey + pubkey
+        if summed_pubkey is None:
+            raise ValidationError(
+                "Global ECDH share set but no eligible input public key found"
+            )
+        if summed_pubkey.infinity:
+            raise ValidationError(
+                "Global eligible input public keys sum to the point at infinity"
+            )
+        return ecdh_share, summed_pubkey.to_bytes_compressed()
 
     # Check for per-input ECDH shares
     combined_ecdh = None
@@ -65,12 +70,13 @@ def collect_input_ecdh_and_pubkey(
                 ecdh_point if combined_ecdh is None else combined_ecdh + ecdh_point
             )
             pubkey = pubkey_from_eligible_input(input_map, i)
-            if pubkey is not None:
-                summed_pubkey = (
-                    pubkey if summed_pubkey is None else summed_pubkey + pubkey
-                )
+            summed_pubkey = pubkey if summed_pubkey is None else summed_pubkey + pubkey
 
-    if combined_ecdh and summed_pubkey:
+    if combined_ecdh is not None and summed_pubkey is not None:
+        if summed_pubkey.infinity:
+            raise ValidationError(
+                "Eligible input public keys sum to the point at infinity"
+            )
         return combined_ecdh.to_bytes_compressed(), summed_pubkey.to_bytes_compressed()
     return None, None
 
@@ -79,8 +85,9 @@ def pubkey_from_eligible_input(input_map: BIP375PSBTMap, index: int) -> Optional
     """
     Extract the public key from a PSBT input map if eligible for silent payments
 
-    Returns a GE point (public key), or None if not found. index names the
-    input in errors.
+    Returns a GE point (public key), or None if the input is not eligible.
+    Raises ValidationError for an eligible input with no usable key. index
+    names the input in errors.
     """
     if not is_input_eligible(input_map, index):
         return None
@@ -96,7 +103,7 @@ def pubkey_from_eligible_input(input_map: BIP375PSBTMap, index: int) -> Optional
     spk = parse_witness_utxo(input_map[PSBT_IN_WITNESS_UTXO])
     if spk and is_p2tr(spk):
         return _public_key(bytes([0x02]) + spk[2:34], index)
-    return None
+    raise ValidationError(f"Input {index} has no PSBT_IN_BIP32_DERIVATION")
 
 
 def _public_key(pubkey: bytes, index: int) -> GE:
@@ -171,6 +178,12 @@ def is_input_eligible(input_map: BIP375PSBTMap, index: int) -> bool:
     if not _has_eligible_script_type(script_pubkey):
         return False
 
+    if is_p2pkh(script_pubkey):
+        # BIP-352 skips a P2PKH input whose public key is uncompressed
+        for pubkey, _ in input_map.get_all_by_type(PSBT_IN_BIP32_DERIVATION):
+            if len(pubkey) == 65 and script_pubkey == _p2pkh_script(hash160(pubkey)):
+                return False
+
     NUMS_H = bytes.fromhex(
         "50929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac0"
     )
@@ -182,6 +195,10 @@ def is_input_eligible(input_map: BIP375PSBTMap, index: int) -> bool:
     if is_p2sh(script_pubkey):
         if PSBT_IN_REDEEM_SCRIPT in input_map:
             redeem_script = input_map[PSBT_IN_REDEEM_SCRIPT]
+            if script_pubkey != _p2sh_script(hash160(redeem_script)):
+                raise ValidationError(
+                    f"Input {index} P2SH redeem script does not match scriptPubKey"
+                )
             if not is_p2wpkh(redeem_script):
                 return False
         else:
@@ -199,38 +216,46 @@ def _has_eligible_script_type(script_pubkey: bytes) -> bool:
     )
 
 
-def is_p2tr(spk: bytes) -> bool:
-    if len(spk) != 34:
-        return False
-    # OP_1 OP_PUSHBYTES_32 <32 bytes>
-    return (spk[0] == 0x51) & (spk[1] == 0x20)
+def is_p2tr(script_pubkey: bytes) -> bool:
+    return len(script_pubkey) == 34 and script_pubkey == _p2tr_script(script_pubkey[2:])
 
 
-def is_p2wpkh(spk: bytes) -> bool:
-    if len(spk) != 22:
-        return False
-    # OP_0 OP_PUSHBYTES_20 <20 bytes>
-    return (spk[0] == 0x00) & (spk[1] == 0x14)
-
-
-def is_p2sh(spk: bytes) -> bool:
-    if len(spk) != 23:
-        return False
-    # OP_HASH160 OP_PUSHBYTES_20 <20 bytes> OP_EQUAL
-    return (spk[0] == 0xA9) & (spk[1] == 0x14) & (spk[-1] == 0x87)
-
-
-def is_p2pkh(spk: bytes) -> bool:
-    if len(spk) != 25:
-        return False
-    # OP_DUP OP_HASH160 OP_PUSHBYTES_20 <20 bytes> OP_EQUALVERIFY OP_CHECKSIG
-    return (
-        (spk[0] == 0x76)
-        & (spk[1] == 0xA9)
-        & (spk[2] == 0x14)
-        & (spk[-2] == 0x88)
-        & (spk[-1] == 0xAC)
+def is_p2wpkh(script_pubkey: bytes) -> bool:
+    return len(script_pubkey) == 22 and script_pubkey == _p2wpkh_script(
+        script_pubkey[2:]
     )
+
+
+def is_p2sh(script_pubkey: bytes) -> bool:
+    return len(script_pubkey) == 23 and script_pubkey == _p2sh_script(
+        script_pubkey[2:22]
+    )
+
+
+def is_p2pkh(script_pubkey: bytes) -> bool:
+    return len(script_pubkey) == 25 and script_pubkey == _p2pkh_script(
+        script_pubkey[3:23]
+    )
+
+
+def _p2tr_script(output_key: bytes) -> bytes:
+    """OP_1 <32-byte x-only output key>"""
+    return bytes([0x51, 0x20]) + output_key
+
+
+def _p2pkh_script(pubkey_hash: bytes) -> bytes:
+    """OP_DUP OP_HASH160 <pubkey hash> OP_EQUALVERIFY OP_CHECKSIG"""
+    return bytes([0x76, 0xA9, 0x14]) + pubkey_hash + bytes([0x88, 0xAC])
+
+
+def _p2wpkh_script(pubkey_hash: bytes) -> bytes:
+    """OP_0 <pubkey hash>"""
+    return bytes([0x00, 0x14]) + pubkey_hash
+
+
+def _p2sh_script(script_hash: bytes) -> bytes:
+    """OP_HASH160 <script hash> OP_EQUAL"""
+    return bytes([0xA9, 0x14]) + script_hash + bytes([0x87])
 
 
 # ============================================================================

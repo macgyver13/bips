@@ -15,6 +15,28 @@ A reference validation implementation for BIP-375: Sending Silent Payments with 
 - **`deps/dleq.py`** - Reference DLEQ implementation from BIP-374
 - **`deps/secp256k1lab/`** - vendored copy of [secp256k1lab](https://github.com/secp256k1lab/secp256k1lab/commit/44dc4bd893b8f03e621585e3bf255253e0e0fbfb) library at version 1.0.0
 
+## Test Vector Format
+
+Each vector is a base64 PSBT with a `description`, a `task`, and a `supplementary` field:
+
+- `task` - the outcome a runner should expect. `invalid` vectors use
+  `fail_deserialize` (must be rejected by the PSBT Structure check) or `fail_sign`
+  (must pass PSBT Structure and be rejected by a later check). `valid` vectors use
+  `finalize` (fully signed, ready to finalize), `sign` (a valid but not-yet-signed
+  or partially-signed snapshot) or `deserialize` (valid, with no signing expected).
+- `supplementary` - diagnostic material (`inputs`, `outputs`, `sp_proofs`, and
+  `psbt_unique_id`) not used for validation:
+  - `inputs` - `prevout_txid` is in display (RPC, big-endian) byte order, not the
+    internal little-endian order PSBT fields use. Every entry in `supplementary.inputs`
+    carries its full `non_witness_utxo` (the previous transaction), and some also
+    carry `witness_utxo`.
+  - `psbt_unique_id` - on every `valid` vector, the PSBT's unique identifier as
+    described in the BIP's Unique Identification section, in display byte order.
+
+The top-level `wallets` field lists the two BIP-39 test wallets the input keys come
+from, by fingerprint and mnemonic. The first is the primary wallet. It also holds the
+silent payment scan and spend keys. `notes` gives the derivation paths.
+
 ## Testing
 
 ### Run Tests

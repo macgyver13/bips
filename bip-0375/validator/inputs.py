@@ -16,10 +16,12 @@ from deps.bitcoin_test.psbt import (
     PSBT_IN_REDEEM_SCRIPT,
     PSBT_IN_TAP_INTERNAL_KEY,
     PSBT_IN_TAP_KEY_SIG,
+    PSBT_IN_TAP_MERKLE_ROOT,
     PSBT_IN_TAP_SCRIPT_SIG,
     PSBT_IN_WITNESS_UTXO,
 )
-from secp256k1lab.secp256k1 import GE
+from secp256k1lab.secp256k1 import G, GE, Scalar
+from secp256k1lab.util import tagged_hash
 
 from .psbt_bip375 import (
     BIP375PSBTMap,
@@ -47,10 +49,6 @@ def collect_input_ecdh_and_pubkey(
             if not is_input_eligible(input_map, i):
                 continue
             pubkey = pubkey_from_eligible_input(input_map, i)
-            if pubkey is None:
-                raise ValidationError(
-                    f"Global ECDH share set but eligible input {i} has no public key"
-                )
             summed_pubkey = pubkey if summed_pubkey is None else summed_pubkey + pubkey
         if summed_pubkey is None:
             raise ValidationError(
@@ -73,12 +71,8 @@ def collect_input_ecdh_and_pubkey(
             combined_ecdh = (
                 ecdh_point if combined_ecdh is None else combined_ecdh + ecdh_point
             )
-            # An eligible input with a share but no pubkey already failed ECDH coverage
             pubkey = pubkey_from_eligible_input(input_map, i)
-            if pubkey is not None:
-                summed_pubkey = (
-                    pubkey if summed_pubkey is None else summed_pubkey + pubkey
-                )
+            summed_pubkey = pubkey if summed_pubkey is None else summed_pubkey + pubkey
 
     if combined_ecdh is not None and summed_pubkey is not None:
         if summed_pubkey.infinity:
@@ -93,24 +87,27 @@ def pubkey_from_eligible_input(input_map: BIP375PSBTMap, index: int) -> Optional
     """
     Extract the public key from a PSBT input map if eligible for silent payments
 
-    Returns a GE point (public key), or None if not found. index names the
-    input in errors.
+    Returns a GE point (public key), or None if the input is not eligible.
+    Raises ValidationError for an eligible input with no usable key. index
+    names the input in errors.
     """
     if not is_input_eligible(input_map, index):
         return None
 
-    # Try BIP32 derivation first (key_data is the pubkey)
-    derivations = input_map.get_all_by_type(PSBT_IN_BIP32_DERIVATION)
-    if derivations:
-        pubkey, _ = derivations[0]
-        if len(pubkey) == 33:
-            return _public_key(pubkey, index)
+    script_pubkey = script_pubkey_from_psbt_input(input_map, index)
+    if is_p2tr(script_pubkey):
+        return _public_key(bytes([0x02]) + _p2tr_output_key(script_pubkey), index)
 
-    # Try PSBT_IN_WITNESS_UTXO for P2TR inputs
-    spk = parse_witness_utxo(input_map[PSBT_IN_WITNESS_UTXO])
-    if spk and is_p2tr(spk):
-        return _public_key(bytes([0x02]) + spk[2:34], index)
-    return None
+    # An input may carry several BIP32 derivations, use the one whose pubkey the
+    # scriptPubKey commits to
+    for pubkey, _ in input_map.get_all_by_type(PSBT_IN_BIP32_DERIVATION):
+        if len(pubkey) == 33 and _script_commits_to_pubkey(script_pubkey, pubkey):
+            return _public_key(pubkey, index)
+    if input_map.get_all_by_type(PSBT_IN_BIP32_DERIVATION):
+        raise ValidationError(
+            f"Input {index} PSBT_IN_BIP32_DERIVATION keys do not match its scriptPubKey"
+        )
+    raise ValidationError(f"Input {index} has no PSBT_IN_BIP32_DERIVATION")
 
 
 def _public_key(pubkey: bytes, index: int) -> GE:
@@ -119,6 +116,16 @@ def _public_key(pubkey: bytes, index: int) -> GE:
         return GE.from_bytes(pubkey)
     except ValueError:
         raise ValidationError(f"Input {index} public key is not a valid point")
+
+
+def _script_commits_to_pubkey(script_pubkey: bytes, pubkey: bytes) -> bool:
+    """True if the P2PKH, P2WPKH or P2SH-P2WPKH scriptPubKey commits to pubkey"""
+    pubkey_hash = hash160(pubkey)
+    return script_pubkey in (
+        _p2pkh_script(pubkey_hash),
+        _p2wpkh_script(pubkey_hash),
+        _p2sh_script(hash160(_p2wpkh_script(pubkey_hash))),
+    )
 
 
 # ============================================================================
@@ -195,8 +202,22 @@ def is_input_eligible(input_map: BIP375PSBTMap, index: int) -> bool:
         "50929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac0"
     )
     if is_p2tr(script_pubkey):
-        tap_internal_key = input_map.get(PSBT_IN_TAP_INTERNAL_KEY)
-        if tap_internal_key == NUMS_H:
+        # PSBT_IN_TAP_INTERNAL_KEY and PSBT_IN_TAP_MERKLE_ROOT can only be trusted if
+        # they reproduce the output key in the scriptPubKey. Otherwise eligibility
+        # cannot be determined. A NUMS claim therefore needs PSBT_IN_TAP_MERKLE_ROOT,
+        # which BIP-371 makes optional.
+        if input_map.get(PSBT_IN_TAP_INTERNAL_KEY) == NUMS_H:
+            merkle_root = input_map.get(PSBT_IN_TAP_MERKLE_ROOT)
+            if merkle_root is None:
+                raise ValidationError(
+                    f"Input {index} P2TR NUMS internal key missing tap merkle root"
+                )
+            if len(merkle_root) != 32 or _taproot_output_key(
+                NUMS_H, merkle_root
+            ) != _p2tr_output_key(script_pubkey):
+                raise ValidationError(
+                    f"Input {index} P2TR NUMS internal key and merkle root do not match scriptPubKey"
+                )
             return False
 
     if is_p2sh(script_pubkey):
@@ -263,6 +284,28 @@ def _p2wpkh_script(pubkey_hash: bytes) -> bytes:
 def _p2sh_script(script_hash: bytes) -> bytes:
     """OP_HASH160 <script hash> OP_EQUAL"""
     return bytes([0xA9, 0x14]) + script_hash + bytes([0x87])
+
+
+def _p2tr_output_key(script_pubkey: bytes) -> bytes:
+    """The BIP-341 x-only output key of a P2TR scriptPubKey"""
+    return script_pubkey[2:34]
+
+
+def _taproot_output_key(internal_key: bytes, merkle_root: bytes) -> Optional[bytes]:
+    """
+    BIP-341 x-only output key for an internal key and script tree merkle root,
+    or None if they give no valid key
+    """
+    try:
+        tweak = Scalar.from_bytes_checked(
+            tagged_hash("TapTweak", internal_key + merkle_root)
+        )
+        output_key = GE.from_bytes_xonly(internal_key) + tweak * G
+    except ValueError:
+        return None
+    if output_key.infinity:
+        return None
+    return output_key.to_bytes_xonly()
 
 
 # ============================================================================

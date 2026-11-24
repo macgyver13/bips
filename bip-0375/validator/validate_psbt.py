@@ -236,11 +236,6 @@ def validate_ecdh_coverage(psbt: PSBT) -> None:
                 raise ValidationError(f"Input {i} ECDH share missing DLEQ proof")
 
             A = pubkey_from_eligible_input(input_map, i)
-            if A is None:
-                raise ValidationError(
-                    f"Input {i} missing public key for DLEQ verification"
-                )
-
             validate_dleq_proof(A, scan_key, ecdh_share, dleq_proof, f"Input {i}")
 
 

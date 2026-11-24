@@ -321,13 +321,13 @@ Use the provided [[bip-0375/test_runner.py|test runner]] to validate each test v
 | missing PSBT_IN_SP_DLEQ field for input when PSBT_IN_SP_ECDH_SHARE set
 |-
 | ECDH Coverage
-| missing PSBT_GLOBAL_SP_DLEQ field when PSBT_GLOBAL_SP_ECDH_SHARE set
-|-
-| ECDH Coverage
 | invalid proof in PSBT_IN_SP_DLEQ field
 |-
 | ECDH Coverage
 | invalid proof in PSBT_IN_SP_DLEQ field when PSBT_OUT_SCRIPT not set for sp output
+|-
+| ECDH Coverage
+| missing PSBT_GLOBAL_SP_DLEQ field when PSBT_GLOBAL_SP_ECDH_SHARE set
 |-
 | ECDH Coverage
 | invalid proof in PSBT_GLOBAL_SP_DLEQ field
@@ -352,6 +352,21 @@ Use the provided [[bip-0375/test_runner.py|test runner]] to validate each test v
 |-
 | ECDH Coverage
 | input 1 missing ECDH share for scan key with two inputs / one sp output
+|-
+| ECDH Coverage
+| P2WPKH PSBT_IN_BIP32_DERIVATION pubkey does not match scriptPubKey
+|-
+| ECDH Coverage
+| P2PKH PSBT_IN_BIP32_DERIVATION pubkey does not match scriptPubKey
+|-
+| ECDH Coverage
+| P2SH-P2WPKH PSBT_IN_BIP32_DERIVATION pubkey does not match scriptPubKey
+|-
+| ECDH Coverage
+| global ECDH share computed from a PSBT_IN_BIP32_DERIVATION pubkey not matching scriptPubKey
+|-
+| ECDH Coverage
+| P2TR input 1 with a NUMS PSBT_IN_TAP_INTERNAL_KEY that does not tweak to scriptPubKey and no ECDH share
 |-
 | ECDH Coverage
 | P2SH-P2WPKH input 1 with a non-P2WPKH PSBT_IN_REDEEM_SCRIPT that does not hash to scriptPubKey and no ECDH share
@@ -468,6 +483,12 @@ Use the provided [[bip-0375/test_runner.py|test runner]] to validate each test v
 | Can Finalize
 | three sp outputs (same scan key) / two regular outputs - k values assigned independently of output index
 |-
+| Can Finalize
+| P2WPKH with decoy PSBT_IN_BIP32_DERIVATION before the matching key
+|-
+| Can Finalize
+| P2PKH with decoy PSBT_IN_BIP32_DERIVATION before the matching key
+|-
 | In Progress
 | two P2TR inputs, neither is signed
 |-
@@ -491,6 +512,7 @@ Use the provided [[bip-0375/test_runner.py|test runner]] to validate each test v
 
 * '''0.2.0''' (2026-11-25):
 ** Clarify that SIGHASH_DEFAULT is accepted in place of SIGHASH_ALL on taproot inputs, matching BIP352, and check the sighash type of every signature in the validator, not only PSBT_IN_SIGHASH_TYPE.
+** Regenerate the test vectors with bip375-test-generator (v1.2.0) and update the validator to match.
 * '''0.1.4''' (2026-11-10):
 ** Replace the bare OP_2 valid test vector with an In Progress vector that passes every check.
 * '''0.1.3''' (2026-09-29):

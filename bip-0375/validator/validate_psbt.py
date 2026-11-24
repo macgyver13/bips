@@ -2,12 +2,11 @@
 """
 Validates PSBTs according to BIP-375 rules
 
-Provides independent checks for PSBT structure, ECDH share coverage,
+Provides sequential checks for PSBT structure, ECDH share coverage,
 input eligibility, and output script correctness.
 """
 
 import struct
-from typing import Tuple
 
 from deps.bitcoin_test.messages import COutPoint
 from deps.bitcoin_test.psbt import (
@@ -37,12 +36,13 @@ from .psbt_bip375 import (
     PSBT_IN_SP_DLEQ,
     PSBT_OUT_SP_V0_INFO,
     PSBT_OUT_SP_V0_LABEL,
+    ValidationError,
 )
 
 
-def validate_psbt_structure(psbt: PSBT) -> Tuple[bool, str]:
+def validate_psbt_structure(psbt: PSBT) -> None:
     """
-    Validate PSBT structure requirements
+    Validate PSBT structure requirements. Raises ValidationError on failure.
 
     Checks:
     - Each output must have PSBT_OUT_SCRIPT or PSBT_OUT_SP_V0_INFO
@@ -64,90 +64,78 @@ def validate_psbt_structure(psbt: PSBT) -> Tuple[bool, str]:
 
         # Output must have script or SP info
         if not has_script and not has_sp_info:
-            return (
-                False,
-                f"Output {i} must have either PSBT_OUT_SCRIPT or PSBT_OUT_SP_V0_INFO",
+            raise ValidationError(
+                f"Output {i} must have either PSBT_OUT_SCRIPT or PSBT_OUT_SP_V0_INFO"
             )
 
         # SP label requires SP info
         if has_sp_label and not has_sp_info:
-            return (
-                False,
-                f"Output {i} has PSBT_OUT_SP_V0_LABEL but missing PSBT_OUT_SP_V0_INFO",
+            raise ValidationError(
+                f"Output {i} has PSBT_OUT_SP_V0_LABEL but missing PSBT_OUT_SP_V0_INFO"
             )
 
         # Validate SP_V0_LABEL field length
         if has_sp_label:
             sp_label = output_map[PSBT_OUT_SP_V0_LABEL]
             if len(sp_label) != 4:
-                return (
-                    False,
-                    f"Output {i} PSBT_OUT_SP_V0_LABEL has wrong length ({len(sp_label)} bytes, expected 4)",
+                raise ValidationError(
+                    f"Output {i} PSBT_OUT_SP_V0_LABEL has wrong length ({len(sp_label)} bytes, expected 4)"
                 )
 
         # Validate SP_V0_INFO field length
         if has_sp_info:
             sp_info = output_map[PSBT_OUT_SP_V0_INFO]
             if len(sp_info) != 66:
-                return (
-                    False,
-                    f"Output {i} SP_V0_INFO has wrong length ({len(sp_info)} bytes, expected 66)",
+                raise ValidationError(
+                    f"Output {i} SP_V0_INFO has wrong length ({len(sp_info)} bytes, expected 66)"
                 )
 
     # Validate ECDH share keydata and value lengths (global and per-input)
     global_ecdh_shares = psbt.g.get_all_by_type(PSBT_GLOBAL_SP_ECDH_SHARE)
     for scan_key, ecdh_share in global_ecdh_shares:
         if len(scan_key) != 33:
-            return (
-                False,
-                f"Global ECDH share scan key has wrong length ({len(scan_key)} bytes, expected 33)",
+            raise ValidationError(
+                f"Global ECDH share scan key has wrong length ({len(scan_key)} bytes, expected 33)"
             )
         if len(ecdh_share) != 33:
-            return (
-                False,
-                f"Global ECDH share has wrong length ({len(ecdh_share)} bytes, expected 33)",
+            raise ValidationError(
+                f"Global ECDH share has wrong length ({len(ecdh_share)} bytes, expected 33)"
             )
 
     for i, input_map in enumerate(psbt.i):
         input_ecdh_shares = input_map.get_all_by_type(PSBT_IN_SP_ECDH_SHARE)
         for scan_key, ecdh_share in input_ecdh_shares:
             if len(scan_key) != 33:
-                return (
-                    False,
-                    f"Input {i} ECDH share scan key has wrong length ({len(scan_key)} bytes, expected 33)",
+                raise ValidationError(
+                    f"Input {i} ECDH share scan key has wrong length ({len(scan_key)} bytes, expected 33)"
                 )
             if len(ecdh_share) != 33:
-                return (
-                    False,
-                    f"Input {i} ECDH share has wrong length ({len(ecdh_share)} bytes, expected 33)",
+                raise ValidationError(
+                    f"Input {i} ECDH share has wrong length ({len(ecdh_share)} bytes, expected 33)"
                 )
 
     # Validate DLEQ proof keydata and value lengths (global and per-input)
     global_dleq_proofs = psbt.g.get_all_by_type(PSBT_GLOBAL_SP_DLEQ)
     for scan_key, dleq_proof in global_dleq_proofs:
         if len(scan_key) != 33:
-            return (
-                False,
-                f"Global DLEQ proof scan key has wrong length ({len(scan_key)} bytes, expected 33)",
+            raise ValidationError(
+                f"Global DLEQ proof scan key has wrong length ({len(scan_key)} bytes, expected 33)"
             )
         if len(dleq_proof) != 64:
-            return (
-                False,
-                f"Global DLEQ proof has wrong length ({len(dleq_proof)} bytes, expected 64)",
+            raise ValidationError(
+                f"Global DLEQ proof has wrong length ({len(dleq_proof)} bytes, expected 64)"
             )
 
     for i, input_map in enumerate(psbt.i):
         input_dleq_proofs = input_map.get_all_by_type(PSBT_IN_SP_DLEQ)
         for scan_key, dleq_proof in input_dleq_proofs:
             if len(scan_key) != 33:
-                return (
-                    False,
-                    f"Input {i} DLEQ proof scan key has wrong length ({len(scan_key)} bytes, expected 33)",
+                raise ValidationError(
+                    f"Input {i} DLEQ proof scan key has wrong length ({len(scan_key)} bytes, expected 33)"
                 )
             if len(dleq_proof) != 64:
-                return (
-                    False,
-                    f"Input {i} DLEQ proof has wrong length ({len(dleq_proof)} bytes, expected 64)",
+                raise ValidationError(
+                    f"Input {i} DLEQ proof has wrong length ({len(dleq_proof)} bytes, expected 64)"
                 )
 
     # Check TX_MODIFIABLE flag when PSBT_OUT_SCRIPT is set
@@ -155,16 +143,15 @@ def validate_psbt_structure(psbt: PSBT) -> Tuple[bool, str]:
         if PSBT_OUT_SP_V0_INFO in output_map and PSBT_OUT_SCRIPT in output_map:
             if len(output_map.get(PSBT_OUT_SCRIPT, b"")) > 0:
                 if psbt.g.get(PSBT_GLOBAL_TX_MODIFIABLE) != b"\x00":
-                    return (
-                        False,
-                        "PSBT_OUT_SCRIPT set for silent payments output but PSBT_GLOBAL_TX_MODIFIABLE not zeroed",
+                    raise ValidationError(
+                        "PSBT_OUT_SCRIPT set for silent payments output but PSBT_GLOBAL_TX_MODIFIABLE not zeroed"
                     )
-    return True, None
 
 
-def validate_ecdh_coverage(psbt: PSBT) -> Tuple[bool, str]:
+def validate_ecdh_coverage(psbt: PSBT) -> None:
     """
-    Validate ECDH share coverage and DLEQ proof correctness
+    Validate ECDH share coverage and DLEQ proof correctness. Raises
+    ValidationError on failure.
 
     Checks:
     - Verify ECDH share coverage for each scan key associated with SP outputs
@@ -180,7 +167,7 @@ def validate_ecdh_coverage(psbt: PSBT) -> Tuple[bool, str]:
             scan_keys.add(sp_info[:33])
 
     if not scan_keys:
-        return True, None  # No SP outputs, nothing to check
+        return  # No SP outputs, nothing to check
 
     # For each scan key, verify ECDH share coverage and DLEQ proofs
     for scan_key in scan_keys:
@@ -197,22 +184,22 @@ def validate_ecdh_coverage(psbt: PSBT) -> Tuple[bool, str]:
             for om in psbt.o
         )
         if scan_key_has_computed_output and not has_global_ecdh and not has_input_ecdh:
-            return False, "Silent payment output present but no ECDH share for scan key"
+            raise ValidationError(
+                "Silent payment output present but no ECDH share for scan key"
+            )
 
         # Verify global DLEQ proof if global ECDH present
         if has_global_ecdh:
             ecdh_share = psbt.g.get_by_key(PSBT_GLOBAL_SP_ECDH_SHARE, scan_key)
             dleq_proof = psbt.g.get_by_key(PSBT_GLOBAL_SP_DLEQ, scan_key)
             if not dleq_proof:
-                return False, "Global ECDH share missing DLEQ proof"
+                raise ValidationError("Global ECDH share missing DLEQ proof")
 
             _, summed_pubkey_bytes = collect_input_ecdh_and_pubkey(psbt, scan_key)
             assert summed_pubkey_bytes is not None, "No public keys found for inputs"
             A_sum = GE.from_bytes(summed_pubkey_bytes)
 
-            valid, msg = validate_dleq_proof(A_sum, scan_key, ecdh_share, dleq_proof)
-            if not valid:
-                return False, f"Global DLEQ proof invalid: {msg}"
+            validate_dleq_proof(A_sum, scan_key, ecdh_share, dleq_proof, "Global")
 
         # Verify the DLEQ proof of every per-input share present, whether or not the
         # output scripts are set yet: a Signer relies on them before it computes
@@ -224,30 +211,25 @@ def validate_ecdh_coverage(psbt: PSBT) -> Tuple[bool, str]:
             if not ecdh_share:
                 # An input with no share has nothing to verify and may not carry its
                 # UTXO yet. Check its eligibility only when coverage is required.
-                if require_coverage and is_input_eligible(input_map):
-                    return (
-                        False,
-                        f"Output script set but eligible input {i} missing ECDH share",
+                if require_coverage and is_input_eligible(input_map, i):
+                    raise ValidationError(
+                        f"Output script set but eligible input {i} missing ECDH share"
                     )
                 continue
-            if not is_input_eligible(input_map):
+            if not is_input_eligible(input_map, i):
                 continue
 
             dleq_proof = input_map.get_by_key(PSBT_IN_SP_DLEQ, scan_key)
             if not dleq_proof:
-                return False, f"Input {i} ECDH share missing DLEQ proof"
+                raise ValidationError(f"Input {i} ECDH share missing DLEQ proof")
 
-            A = pubkey_from_eligible_input(input_map)
+            A = pubkey_from_eligible_input(input_map, i)
             if A is None:
-                return (
-                    False,
-                    f"Input {i} missing public key for DLEQ verification",
+                raise ValidationError(
+                    f"Input {i} missing public key for DLEQ verification"
                 )
 
-            valid, msg = validate_dleq_proof(A, scan_key, ecdh_share, dleq_proof)
-            if not valid:
-                return False, f"Input {i} DLEQ proof invalid: {msg}"
-    return True, None
+            validate_dleq_proof(A, scan_key, ecdh_share, dleq_proof, f"Input {i}")
 
 
 def validate_dleq_proof(
@@ -255,16 +237,18 @@ def validate_dleq_proof(
     scan_key: bytes,
     ecdh_share: bytes,
     dleq_proof: bytes,
-) -> Tuple[bool, str]:
-    """Verify a DLEQ proof for silent payments"""
+    context: str,
+) -> None:
+    """Verify a DLEQ proof for silent payments. context names the proof in the error."""
     B_scan = GE.from_bytes(scan_key)
     C_ecdh = GE.from_bytes(ecdh_share)
 
     # Verify DLEQ proof using BIP-374 reference
     result = dleq_verify_proof(A, B_scan, C_ecdh, dleq_proof)
     if not result:
-        return False, "DLEQ proof verification failed"
-    return True, None
+        raise ValidationError(
+            f"{context} DLEQ proof invalid: DLEQ proof verification failed"
+        )
 
 
 def is_segwit_v2_or_later(script_pubkey: bytes) -> bool:
@@ -276,9 +260,10 @@ def is_segwit_v2_or_later(script_pubkey: bytes) -> bool:
     )
 
 
-def validate_input_eligibility(psbt: PSBT) -> Tuple[bool, str]:
+def validate_input_eligibility(psbt: PSBT) -> None:
     """
-    Validate input eligibility constraints for silent payments
+    Validate input eligibility constraints for silent payments. Raises
+    ValidationError on failure.
 
     Checks:
     - No segwit v>1 inputs when SP outputs present
@@ -287,13 +272,15 @@ def validate_input_eligibility(psbt: PSBT) -> Tuple[bool, str]:
     # Check if SP outputs exist
     has_sp_outputs = any(PSBT_OUT_SP_V0_INFO in om for om in psbt.o)
     if not has_sp_outputs:
-        return True, None
+        return
 
     # Check segwit version restrictions
     for i, input_map in enumerate(psbt.i):
-        script = script_pubkey_from_psbt_input(input_map)
+        script = script_pubkey_from_psbt_input(input_map, i)
         if script is not None and is_segwit_v2_or_later(script):
-            return False, f"Input {i} uses segwit version > 1 with silent payments"
+            raise ValidationError(
+                f"Input {i} uses segwit version > 1 with silent payments"
+            )
 
     # PSBT_IN_SIGHASH_TYPE is optional. If set, it must be SIGHASH_ALL 0x01, or
     # SIGHASH_DEFAULT 0x00 on a taproot input. BIP-341 defines SIGHASH_DEFAULT
@@ -302,15 +289,14 @@ def validate_input_eligibility(psbt: PSBT) -> Tuple[bool, str]:
         if PSBT_IN_SIGHASH_TYPE in input_map:
             sighash = input_map[PSBT_IN_SIGHASH_TYPE]
             if not sighash:
-                return False, f"Input {i} has empty PSBT_IN_SIGHASH_TYPE"
+                raise ValidationError(f"Input {i} has empty PSBT_IN_SIGHASH_TYPE")
             sighash_type = int.from_bytes(sighash, "little")
             if sighash_type != 0x01 and not (
                 sighash_type == 0x00
-                and is_p2tr(script_pubkey_from_psbt_input(input_map) or b"")
+                and is_p2tr(script_pubkey_from_psbt_input(input_map, i) or b"")
             ):
-                return (
-                    False,
-                    f"Input {i} uses non-SIGHASH_ALL (0x{sighash_type:02x}) with silent payments",
+                raise ValidationError(
+                    f"Input {i} uses non-SIGHASH_ALL (0x{sighash_type:02x}) with silent payments"
                 )
 
     # Check the sighash type of every PSBT_IN_PARTIAL_SIG, PSBT_IN_TAP_KEY_SIG and
@@ -319,11 +305,9 @@ def validate_input_eligibility(psbt: PSBT) -> Tuple[bool, str]:
     for i, input_map in enumerate(psbt.i):
         for sig, is_schnorr in input_signatures(input_map):
             if not _signs_sighash_all(sig, is_schnorr):
-                return (
-                    False,
-                    f"Input {i} has a non-SIGHASH_ALL signature (0x{sig[-1:].hex()}) with silent payments",
+                raise ValidationError(
+                    f"Input {i} has a non-SIGHASH_ALL signature (0x{sig[-1:].hex()}) with silent payments"
                 )
-    return True, None
 
 
 def _signs_sighash_all(sig: bytes, is_schnorr: bool) -> bool:
@@ -335,9 +319,10 @@ def _signs_sighash_all(sig: bytes, is_schnorr: bool) -> bool:
     return len(sig) > 0 and sig[-1] == 0x01
 
 
-def validate_output_scripts(psbt: PSBT) -> Tuple[bool, str]:
+def validate_output_scripts(psbt: PSBT) -> None:
     """
-    Validate computed output scripts match silent payment derivation
+    Validate computed output scripts match silent payment derivation. Raises
+    ValidationError on failure.
 
     Checks:
     - For each SP output with PSBT_OUT_SCRIPT set, recomputes the expected P2TR
@@ -384,15 +369,12 @@ def validate_output_scripts(psbt: PSBT) -> Tuple[bool, str]:
             if PSBT_OUT_SCRIPT in output_map:
                 actual_script = output_map[PSBT_OUT_SCRIPT]
                 if actual_script != computed_script:
-                    return (
-                        False,
-                        f"Output {output_idx} script doesn't match silent payments derivation",
+                    raise ValidationError(
+                        f"Output {output_idx} script doesn't match silent payments derivation"
                     )
 
             scan_key_k_values[scan_pubkey_bytes] = k + 1
         elif PSBT_OUT_SCRIPT in output_map:
-            return (
-                False,
-                f"Output {output_idx} has PSBT_OUT_SCRIPT but missing ECDH share or input pubkeys",
+            raise ValidationError(
+                f"Output {output_idx} has PSBT_OUT_SCRIPT but missing ECDH share or input pubkeys"
             )
-    return True, None

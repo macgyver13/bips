@@ -30,6 +30,10 @@ PSBT_OUT_SP_V0_INFO = 0x09
 PSBT_OUT_SP_V0_LABEL = 0x0A
 
 
+class ValidationError(Exception):
+    """A PSBT breaks a BIP-375 validation rule"""
+
+
 class BIP375PSBTMap(PSBTMap):
     """PSBTMap with BIP-375 field access helpers"""
 

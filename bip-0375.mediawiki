@@ -257,7 +257,7 @@ Validation is performed in 4 sequential checks. This [[bip-0375/validator/valida
 
 # '''PSBT Structure''' - Verify BIP375 field requirements
 # '''ECDH Coverage''' - Verify ECDH share presence and correctness using BIP374 DLEQ
-# '''Input Eligibility''' - Verify input constraints when silent payment outputs are present
+# '''Input Eligibility''' - Verify the [[#signer|Signer]] rules for inputs when silent payment outputs are present
 # '''Output Scripts''' - Verify output scripts match silent payment derivation
 
 Valid PSBTs are organized into 2 categories:
@@ -291,7 +291,16 @@ Use the provided [[bip-0375/test_runner.py|test runner]] to validate each test v
 | incorrect byte length for PSBT_IN_SP_DLEQ field
 |-
 | PSBT Structure
-| PSBT_GLOBAL_TX_MODIFIABLE field is non-zero when PSBT_OUT_SCRIPT set for sp output
+| PSBT_IN_SP_ECDH_SHARE scan key is not a valid point
+|-
+| PSBT Structure
+| PSBT_IN_SP_ECDH_SHARE value is not a valid point
+|-
+| PSBT Structure
+| PSBT_OUT_SP_V0_INFO scan key is not a valid point
+|-
+| PSBT Structure
+| PSBT_OUT_SP_V0_INFO spend key is not a valid point
 |-
 | PSBT Structure
 | missing PSBT_OUT_SCRIPT field when sending to non-sp output
@@ -365,6 +374,12 @@ Use the provided [[bip-0375/test_runner.py|test runner]] to validate each test v
 | Input Eligibility
 | SIGHASH_DEFAULT sighash type on non-taproot input with sp output
 |-
+| Input Eligibility
+| PSBT_GLOBAL_TX_MODIFIABLE Inputs/Outputs Modifiable flags not cleared when PSBT_OUT_SCRIPT set for sp output
+|-
+| Input Eligibility
+| input signed before every sp output has PSBT_OUT_SCRIPT
+|-
 | Output Scripts
 | P2TR input with NUMS internal key cannot derive sp output
 |-
@@ -386,6 +401,9 @@ Use the provided [[bip-0375/test_runner.py|test runner]] to validate each test v
 |-
 | Can Finalize
 | one P2PKH input single-signer
+|-
+| Can Finalize
+| one P2WPKH input with PSBT_GLOBAL_TX_MODIFIABLE omitted
 |-
 | Can Finalize
 | two inputs single-signer using global ECDH share

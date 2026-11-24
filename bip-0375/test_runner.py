@@ -5,7 +5,6 @@ import argparse
 import json
 from pathlib import Path
 import sys
-from typing import Tuple
 
 project_root = Path(__file__).parent
 deps_dir = project_root / "deps"
@@ -14,7 +13,7 @@ for path in [str(deps_dir), str(secp256k1lab_dir)]:
     if path not in sys.path:
         sys.path.insert(0, path)
 
-from validator.psbt_bip375 import BIP375PSBT
+from validator.psbt_bip375 import BIP375PSBT, ValidationError
 from validator.validate_psbt import (
     validate_psbt_structure,
     validate_ecdh_coverage,
@@ -30,37 +29,25 @@ CHECK_FUNCTIONS = {
 }
 
 
-def validate_bip375_psbt(
-    psbt_data: str, checks: list[str], debug: bool = False
-) -> Tuple[bool, str]:
-    """Performs sequential validation of a PSBT against BIP-375 rules"""
-    psbt = BIP375PSBT.from_base64(psbt_data)
+def validate_bip375_psbt(psbt_data: str) -> tuple[bool, str, str | None]:
+    """Performs sequential validation of a PSBT against BIP-375 rules.
 
-    if checks is None:
-        checks = [
-            "psbt_structure",
-            "ecdh_coverage",
-            "input_eligibility",
-            "output_scripts",
-        ]
+    Returns (is_valid, message, failing_check): failing_check names the check
+    that rejected the PSBT, or None if every check passed. A PSBT that does
+    not parse counts as a PSBT Structure failure.
+    """
+    try:
+        psbt = BIP375PSBT.from_base64(psbt_data)
+    except ValueError as e:
+        return False, str(e), "psbt_structure"
 
-    for check_name in checks:
-        if check_name not in CHECK_FUNCTIONS:
-            return False, f"Unknown check: {check_name}"
-
-        check_fn = CHECK_FUNCTIONS[check_name]
-
+    for check_name, check_fn in CHECK_FUNCTIONS.items():
         try:
-            is_valid, msg = check_fn(psbt)
-        except ValueError as e:
-            is_valid, msg = False, str(e)
-        if debug:
-            msg = f"{check_name.upper()}: {msg}" if msg else msg
+            check_fn(psbt)
+        except ValidationError as e:
+            return False, str(e), check_name
 
-        if not is_valid:
-            return False, msg
-
-    return True, "All checks passed"
+    return True, "All checks passed", None
 
 
 def load_test_vectors(filename: str) -> dict:
@@ -76,48 +63,61 @@ def load_test_vectors(filename: str) -> dict:
         sys.exit(1)
 
 
-def run_validation_tests(test_data: dict, verbosity: int = 0) -> tuple[int, int]:
-    """Run validation checks for each test vector"""
+def run_invalid_tests(test_data: dict, verbosity: int = 0) -> tuple[int, int]:
+    """Run the `invalid` section (each PSBT should fail validation)."""
     passed = 0
     failed = 0
 
-    # Process invalid PSBTs (should fail validation)
     invalid_tests = test_data.get("invalid", [])
     print(f"Invalid PSBTs: {len(invalid_tests)}")
     for test_vector in invalid_tests:
-        is_valid, result = validate_bip375_psbt(
-            test_vector["psbt"], test_vector.get("checks"), debug=verbosity >= 2
-        )
         print(f"{test_vector['description']}")
-        if not is_valid:
-            passed += 1
-            if verbosity >= 1:
-                print(f"  {result}")
-        else:
-            failed += 1
-            if result:
-                print(f"  ERROR: {result}")
 
-    # Process valid PSBTs (should pass validation)
+        is_valid, result, failing_check = validate_bip375_psbt(test_vector["psbt"])
+        if is_valid:
+            failed += 1
+            print("  ERROR: expected validation to fail")
+            continue
+
+        passed += 1
+        if verbosity >= 2:
+            print(f"  {failing_check.upper()}: {result}")
+        elif verbosity >= 1:
+            print(f"  {result}")
+
+    return passed, failed
+
+
+def run_valid_tests(test_data: dict, verbosity: int = 0) -> tuple[int, int]:
+    """Run the `valid` section (each PSBT should pass validation)."""
+    passed = 0
+    failed = 0
+
     valid_tests = test_data.get("valid", [])
-    print("")
     print(f"Valid PSBTs: {len(valid_tests)}")
     for test_vector in valid_tests:
-        is_valid, result = validate_bip375_psbt(
-            test_vector["psbt"], test_vector.get("checks"), debug=verbosity >= 2
-        )
-
         print(f"{test_vector['description']}")
+
+        is_valid, result, failing_check = validate_bip375_psbt(test_vector["psbt"])
         if is_valid:
             passed += 1
             if verbosity >= 1:
                 print(f"  {result}")
         else:
             failed += 1
-            if result:
-                print(f"  ERROR: {result}")
+            if verbosity >= 2:
+                result = f"{failing_check.upper()}: {result}"
+            print(f"  ERROR: {result}")
 
     return passed, failed
+
+
+def run_validation_tests(test_data: dict, verbosity: int = 0) -> tuple[int, int]:
+    """Run validation checks for both sections."""
+    invalid_passed, invalid_failed = run_invalid_tests(test_data, verbosity)
+    print("")
+    valid_passed, valid_failed = run_valid_tests(test_data, verbosity)
+    return invalid_passed + valid_passed, invalid_failed + valid_failed
 
 
 def main():

@@ -2,7 +2,7 @@
 """
 Validates PSBTs according to BIP-375 rules
 
-Provides independent checks for PSBT structure, ECDH share coverage,
+Provides sequential checks for PSBT structure, ECDH share coverage,
 input eligibility, and output script correctness.
 """
 
@@ -52,13 +52,11 @@ def validate_psbt_structure(psbt: PSBT) -> None:
     - ECDH share and DLEQ proof keydata must be 33-byte scan keys
     - ECDH shares must be 33 bytes
     - DLEQ proofs must be 64 bytes
-    - TX_MODIFIABLE is zero when PSBT_OUT_SCRIPT set for SP output
+    - Scan keys, ECDH shares and SP_V0_INFO keys must be valid points
     """
     # Check output requirements
     for i, output_map in enumerate(psbt.o):
-        has_script = (
-            PSBT_OUT_SCRIPT in output_map and len(output_map[PSBT_OUT_SCRIPT]) > 0
-        )
+        has_script = PSBT_OUT_SCRIPT in output_map
         has_sp_info = PSBT_OUT_SP_V0_INFO in output_map
         has_sp_label = PSBT_OUT_SP_V0_LABEL in output_map
 
@@ -138,14 +136,28 @@ def validate_psbt_structure(psbt: PSBT) -> None:
                     f"Input {i} DLEQ proof has wrong length ({len(dleq_proof)} bytes, expected 64)"
                 )
 
-    # Check TX_MODIFIABLE flag when PSBT_OUT_SCRIPT is set
-    for output_map in psbt.o:
-        if PSBT_OUT_SP_V0_INFO in output_map and PSBT_OUT_SCRIPT in output_map:
-            if len(output_map.get(PSBT_OUT_SCRIPT, b"")) > 0:
-                if psbt.g.get(PSBT_GLOBAL_TX_MODIFIABLE) != b"\x00":
-                    raise ValidationError(
-                        "PSBT_OUT_SCRIPT set for silent payments output but PSBT_GLOBAL_TX_MODIFIABLE not zeroed"
-                    )
+    # Validate that every 33-byte key and ECDH share checked above is a valid point
+    points = []
+    for i, output_map in enumerate(psbt.o):
+        if PSBT_OUT_SP_V0_INFO in output_map:
+            sp_info = output_map[PSBT_OUT_SP_V0_INFO]
+            points.append((sp_info[:33], f"Output {i} SP_V0_INFO scan key"))
+            points.append((sp_info[33:], f"Output {i} SP_V0_INFO spend key"))
+    maps = [("Global", psbt.g, PSBT_GLOBAL_SP_ECDH_SHARE, PSBT_GLOBAL_SP_DLEQ)] + [
+        (f"Input {i}", input_map, PSBT_IN_SP_ECDH_SHARE, PSBT_IN_SP_DLEQ)
+        for i, input_map in enumerate(psbt.i)
+    ]
+    for context, psbt_map, ecdh_type, dleq_type in maps:
+        for scan_key, ecdh_share in psbt_map.get_all_by_type(ecdh_type):
+            points.append((scan_key, f"{context} ECDH share scan key"))
+            points.append((ecdh_share, f"{context} ECDH share"))
+        for scan_key, _ in psbt_map.get_all_by_type(dleq_type):
+            points.append((scan_key, f"{context} DLEQ proof scan key"))
+    for point, name in points:
+        try:
+            GE.from_bytes_compressed(point)
+        except ValueError:
+            raise ValidationError(f"{name} is not a valid point")
 
 
 def validate_ecdh_coverage(psbt: PSBT) -> None:
@@ -155,7 +167,8 @@ def validate_ecdh_coverage(psbt: PSBT) -> None:
 
     Checks:
     - Verify ECDH share coverage for each scan key associated with SP outputs
-    - Every ECDH share must have a corresponding DLEQ proof
+    - The global ECDH share for that scan key must have a DLEQ proof and so
+      must every per-input share on an eligible input
     - If PSBT_OUT_SCRIPT is set, all eligible inputs must have ECDH coverage
     - DLEQ proofs must verify correctly
     """
@@ -284,6 +297,9 @@ def validate_input_eligibility(psbt: PSBT) -> None:
     Checks:
     - No segwit v>1 inputs when SP outputs present
     - Verify SIGHASH_ALL when SP outputs are present
+    - No input is signed until every SP output has PSBT_OUT_SCRIPT
+    - TX_MODIFIABLE Inputs/Outputs Modifiable flags are cleared once PSBT_OUT_SCRIPT
+      is set for an SP output
     """
     # Check if SP outputs exist
     has_sp_outputs = any(PSBT_OUT_SP_V0_INFO in om for om in psbt.o)
@@ -315,14 +331,35 @@ def validate_input_eligibility(psbt: PSBT) -> None:
                     f"Input {i} uses non-SIGHASH_ALL (0x{sighash_type:02x}) with silent payments"
                 )
 
-    # Check the sighash type of every PSBT_IN_PARTIAL_SIG, PSBT_IN_TAP_KEY_SIG and
-    # PSBT_IN_TAP_SCRIPT_SIG, whether or not PSBT_IN_SIGHASH_TYPE is set. A 64-byte
-    # Schnorr signature is SIGHASH_DEFAULT.
+    # A Signer must not add a signature until every SP output has PSBT_OUT_SCRIPT
+    missing_sp_script = any(
+        PSBT_OUT_SP_V0_INFO in om and PSBT_OUT_SCRIPT not in om for om in psbt.o
+    )
     for i, input_map in enumerate(psbt.i):
-        for sig, is_schnorr in input_signatures(input_map):
+        signatures = input_signatures(input_map)
+        if missing_sp_script and signatures:
+            raise ValidationError(
+                f"Input {i} is signed before every silent payment output has PSBT_OUT_SCRIPT"
+            )
+        # Check the sighash type of every PSBT_IN_PARTIAL_SIG, PSBT_IN_TAP_KEY_SIG and
+        # PSBT_IN_TAP_SCRIPT_SIG, whether or not PSBT_IN_SIGHASH_TYPE is set. A 64-byte
+        # Schnorr signature is SIGHASH_DEFAULT.
+        for sig, is_schnorr in signatures:
             if not _signs_sighash_all(sig, is_schnorr):
                 raise ValidationError(
                     f"Input {i} has a non-SIGHASH_ALL signature (0x{sig[-1:].hex()}) with silent payments"
+                )
+
+    tx_modifiable = psbt.g.get(PSBT_GLOBAL_TX_MODIFIABLE)
+    flags = tx_modifiable[0] if tx_modifiable else 0
+
+    # Inputs/Outputs Modifiable must be False once PSBT_OUT_SCRIPT is set for an SP output
+    if flags & 0x03:
+        for i, output_map in enumerate(psbt.o):
+            if PSBT_OUT_SP_V0_INFO in output_map and PSBT_OUT_SCRIPT in output_map:
+                raise ValidationError(
+                    f"Output {i} has PSBT_OUT_SCRIPT set for silent payments output but "
+                    "PSBT_GLOBAL_TX_MODIFIABLE Inputs/Outputs Modifiable flags not cleared"
                 )
 
 
